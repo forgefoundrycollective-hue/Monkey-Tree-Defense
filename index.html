@@ -295,7 +295,7 @@ const G = {
   monkey: {
     x: TREE_X + 24, y: 380, mode: "tree",  // tree | jump | ground | run | hop
     vx: 0, vy: 0, face: 1, cycle: 0, throwT: 0, blink: 0, held: "banana",
-    swingT: 0, swingCd: 0, stunT: 0,
+    swingT: 0, swingCd: 0, stunT: 0, safeT: 0,
     hopFrom: null,
   },
 };
@@ -500,12 +500,23 @@ function updateEnemy(e, dt) {
       e.atk = k.atkCd;
       const m = G.monkey;
       // a ground attacker next to a low monkey pinches HIM instead of the tree
-      if (e.kind !== "bird" && m.mode === "tree" && m.stunT <= 0 &&
+      if (e.kind !== "bird" && m.mode === "tree" && m.safeT <= 0 &&
           m.y > CLIMB_MAX - 50 && Math.abs(e.x - m.x) < 70) {
         m.stunT = 0.8;
+        m.safeT = 2.0;  // stun + escape window — no chain-pinching
         shake(6);
         addFloat(m.x, m.y - 52, "OUCH!", "#FF8A5C");
         sfx.grunt();
+        // the pinch shoves every grounded attacker back; they must walk
+        // back in, buying the monkey time to climb clear
+        for (const g of G.enemies) {
+          if (g.dead || g.flee || g.kind === "bird") continue;
+          if (Math.abs(g.x - m.x) < 130) {
+            g.x += Math.sign(g.x - m.x || 1) * (g.kind === "boss" ? 34 : 70);
+            g.state = "move";
+            G.parts.push({ kind: "dust", x: g.x, y: GROUND - 6, vx: rnd(-30, 30), vy: rnd(-50, -10), g: 100, life: 0.5, t: 0, rot: 0, color: "#F0D9A0" });
+          }
+        }
       } else {
         damageTree(k.dmg, e.x, e.y);
       }
@@ -616,8 +627,11 @@ function updateArrive(dt) {
   if (p >= 1) {
     m.mode = "tree"; m.x = tx; m.y = ty; m.face = 1;
     G.state = "play";
-    setWave(1);   // fresh stage: the new tree starts back at wave 1
-    banner("HOME SWEET HOME!", "Tree #" + (G.treesLost + 1) + " — back to Wave 1", 2.6);
+    // checkpoint restart: begin the new tree at half the wave you reached
+    const checkpoint = Math.max(1, Math.floor(G.wave / 2));
+    setWave(checkpoint);
+    if (G.bossWave) spawnBoss();  // a checkpoint can land on a King wave
+    banner("HOME SWEET HOME!", "Tree #" + (G.treesLost + 1) + " — back to Wave " + checkpoint, 2.6);
     sfx.jingleHome();
   }
 }
@@ -811,6 +825,7 @@ function update(dt) {
   m.swingT = Math.max(0, m.swingT - dt);
   m.swingCd = Math.max(0, m.swingCd - dt);
   m.stunT = Math.max(0, m.stunT - dt);
+  m.safeT = Math.max(0, m.safeT - dt);
   G.bananaCd = Math.max(0, G.bananaCd - dt);
   G.cocoCd = Math.max(0, G.cocoCd - dt);
   G.comboT = Math.max(0, G.comboT - dt);

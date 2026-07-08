@@ -43,8 +43,9 @@ automatically on touch devices.
 - When the tree is nearly gone, listen for the heartbeat…
 - If the tree's HP hits zero — **TIMBERRR!** — it crashes down (squashing
   anyone underneath), and your monkey runs down the beach to claim a fresh
-  tree. There is no game over: claiming a new tree simply **restarts the stage
-  at wave 1**, while your score keeps climbing. Beat your best.
+  tree. There is no game over: the new tree **restarts at a checkpoint — half
+  the wave you reached** (fall on wave 7, restart at 3; wave 10, restart
+  at 5) — while your score keeps climbing. Beat your best.
 
 ## Tech notes
 
