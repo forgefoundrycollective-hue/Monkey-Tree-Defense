@@ -77,6 +77,8 @@ addEventListener("keydown", e => {
   if ((e.code === "KeyP" || e.code === "Escape") && (G.state === "play" || G.paused)) togglePause();
   if (e.code === "KeyE" || e.code === "ShiftLeft" || e.code === "ShiftRight") throwCoconut();
   if (e.code === "Space") throwBanana();
+  if (e.code === "KeyF") swing();
+  if (e.code === "KeyQ") throwClam();
 });
 addEventListener("keyup", e => { keys[e.code] = false; });
 
@@ -102,17 +104,22 @@ addEventListener("pointerup", e => {
   touchBtns.up.held = touchBtns.down.held = false;
 });
 
-// On-screen touch buttons (climb up / down, coconut)
+// On-screen touch buttons (climb up / down, coconut, stick swing, clam)
 const touchBtns = {
-  up:   { x: 62,  y: H - 130, r: 40, held: false, label: "▲" },
-  down: { x: 62,  y: H - 46,  r: 40, held: false, label: "▼" },
-  coco: { x: W - 62, y: H - 56, r: 44, held: false, label: "🥥" },
+  up:    { x: 62,  y: H - 130, r: 40, held: false, label: "▲" },
+  down:  { x: 62,  y: H - 46,  r: 40, held: false, label: "▼" },
+  coco:  { x: W - 62, y: H - 56, r: 44, held: false },
+  swing: { x: W - 160, y: H - 46, r: 38, held: false },
+  clam:  { x: W - 62, y: H - 156, r: 34, held: false },
 };
 function touchButtonHit(x, y, press) {
-  for (const k of ["up", "down", "coco"]) {
+  for (const k of ["up", "down", "coco", "swing", "clam"]) {
+    if (k === "clam" && !G.heldClam) continue;
     const b = touchBtns[k];
     if ((x - b.x) ** 2 + (y - b.y) ** 2 < (b.r + 8) ** 2) {
       if (k === "coco") { if (press) throwCoconut(); }
+      else if (k === "swing") { if (press) swing(); }
+      else if (k === "clam") { if (press) throwClam(); }
       else b.held = press;
       return true;
     }
@@ -203,6 +210,10 @@ const sfx = {
   jingleHome:  () => { [392, 523, 659, 784, 1046].forEach((f, i) => pluck(f, 0.2, i * 0.1, 0.45)); },
   sadWah:      () => { tone(330, 233, 0.5, "sawtooth", 0.12); tone(311, 208, 0.7, "sawtooth", 0.12, 0.45); },
   heal:        () => { [659, 784, 1046].forEach((f, i) => pluck(f, 0.14, i * 0.06, 0.25)); },
+  bonk:        () => { tone(180, 70, 0.1, "square", 0.3); noiseHit(0.06, 1500, 400, 0.2); },
+  horn:        () => { [196, 196, 262].forEach((f, i) => tone(f, f * 0.98, 0.3, "sawtooth", 0.2, i * 0.22)); },
+  alarm:       () => { tone(700, 1500, 0.18, "square", 0.1); tone(900, 1700, 0.15, "square", 0.08, 0.14); },
+  heartbeat:   () => { tone(68, 50, 0.09, "sine", 0.42); tone(62, 46, 0.08, "sine", 0.3, 0.15); },
 };
 
 // Cheery 4-bar music loop, pre-rendered into a buffer.
@@ -272,6 +283,8 @@ const G = {
   shakeAmp: 0,
   scrollTotal: 0,
   musicRate: 1,
+  clam: null, heldClam: false, bannedKind: null,
+  squadQueue: [], bossWave: false, heartT: 0,
   banner: { text: "", sub: "", t: 0, dur: 0 },
   tree: { hp: 100, max: 100, stage: 0, sway: 0, hitT: 0, fallT: 0, fallAngle: 0, crashed: false, seed: 7 },
   fallenTree: null,        // {x, angle, seed, stage}
@@ -282,6 +295,7 @@ const G = {
   monkey: {
     x: TREE_X + 24, y: 380, mode: "tree",  // tree | jump | ground | run | hop
     vx: 0, vy: 0, face: 1, cycle: 0, throwT: 0, blink: 0, held: "banana",
+    swingT: 0, swingCd: 0, stunT: 0,
     hopFrom: null,
   },
 };
@@ -325,16 +339,30 @@ function startGame() {
 }
 function setWave(n) {
   G.wave = n;
-  G.toSpawn = Math.min(45, 4 + n * 2 + Math.floor(n * n * 0.1));
+  G.bannedKind = null;
+  G.squadQueue = [];
+  G.bossWave = n % 5 === 0;
+  if (G.bossWave) {
+    G.toSpawn = 4;        // light escort — the King is the show
+    G.interval = 3.2;
+  } else {
+    G.toSpawn = Math.min(40, 4 + n * 2 + Math.floor(n * n * 0.1));
+    G.interval = Math.max(0.5, Math.min(1.7, 2.1 - n * 0.11));
+  }
   G.spawnT = 1.4;
-  G.interval = Math.max(0.5, 2.1 - n * 0.11);
   G.waveLull = 0;
   setMusicRate(1 + Math.min(0.5, (n - 1) * 0.045));
 }
 function startWave(n) {
   setWave(n);
-  banner("WAVE " + n, n === 1 ? "Protect your tree!" : "They're getting faster!");
-  sfx.jingleWave();
+  if (G.bossWave) {
+    banner("KING PINCHER APPROACHES!", "Wave " + n, 2.6);
+    sfx.horn();
+    spawnBoss();
+  } else {
+    banner("WAVE " + n, n === 1 ? "Protect your tree!" : "They're getting faster!");
+    sfx.jingleWave();
+  }
 }
 function togglePause() {
   G.paused = !G.paused;
@@ -342,20 +370,32 @@ function togglePause() {
 
 // --------------------------- Enemies -----------------------------
 const KINDS = {
-  bird:  { hp: 1, r: 20, score: 10, dmg: 3,  atkCd: 0.9, speed: () => Math.min(195, 68 + (G.wave - 1) * 9) },
-  crab:  { hp: 2, r: 18, score: 15, dmg: 4,  atkCd: 1.1, speed: () => Math.min(150, 52 + (G.wave - 1) * 7) },
-  snake: { hp: 1, r: 17, score: 20, dmg: 4,  atkCd: 0.8, speed: () => Math.min(235, 105 + (G.wave - 1) * 9) },
-  boar:  { hp: 6, r: 26, score: 50, dmg: 9,  atkCd: 1.4, speed: () => Math.min(165, 62 + (G.wave - 1) * 6) },
+  // difficulty escalates through composition (new kinds, squads, dives, the
+  // King) rather than raw speed — the ramps here are deliberately gentle
+  bird:  { hp: 1,  r: 20, score: 10,  dmg: 3,  atkCd: 0.9, speed: () => Math.min(160, 68 + (G.wave - 1) * 5) },
+  crab:  { hp: 2,  r: 18, score: 15,  dmg: 4,  atkCd: 1.1, speed: () => Math.min(130, 52 + (G.wave - 1) * 4) },
+  snake: { hp: 1,  r: 17, score: 20,  dmg: 4,  atkCd: 0.8, speed: () => Math.min(210, 105 + (G.wave - 1) * 5) },
+  boar:  { hp: 6,  r: 26, score: 50,  dmg: 9,  atkCd: 1.4, speed: () => Math.min(140, 62 + (G.wave - 1) * 3.5) },
+  boss:  { hp: 25, r: 44, score: 250, dmg: 15, atkCd: 1.4, speed: () => 40 },
 };
-function spawnEnemy() {
+function pickKind() {
   const w = G.wave;
   const bag = [["bird", 10]];
   if (w >= 2) bag.push(["crab", 8]);
   if (w >= 4) bag.push(["snake", 5]);
   if (w >= 6) bag.push(["boar", 3]);
-  let total = bag.reduce((s, b) => s + b[1], 0), roll = rnd(total), kind = "bird";
-  for (const [k, wt] of bag) { roll -= wt; if (roll <= 0) { kind = k; break; } }
-
+  const allowed = bag.filter(b => b[0] !== G.bannedKind);
+  if (!allowed.length) return null;
+  let total = allowed.reduce((s, b) => s + b[1], 0), roll = rnd(total);
+  for (const [k, wt] of allowed) { roll -= wt; if (roll <= 0) return k; }
+  return allowed[0][0];
+}
+function spawnEnemy(kind) {
+  kind = kind || pickKind();
+  if (!kind || kind === G.bannedKind) return;
+  // the tide takes an unclaimed clam once the next attackers arrive
+  if (G.clam) { G.clam = null; addFloat(TREE_X + 46, GROUND - 34, "the clam washed away…", "#D8F7FF"); }
+  const w = G.wave;
   let side = 1; // 1 = from right
   if (kind === "bird" && w >= 3 && Math.random() < 0.22) side = -1;
   if (kind !== "bird" && w >= 6 && Math.random() < 0.15) side = -1;
@@ -372,6 +412,14 @@ function spawnEnemy() {
   if (kind === "boar") e.y = GROUND - 14;
   G.enemies.push(e);
 }
+function spawnBoss() {
+  const k = KINDS.boss;
+  G.enemies.push({
+    kind: "boss", side: 1, hp: k.hp, maxhp: k.hp, r: k.r,
+    x: W + 90, y: GROUND - 24, vx: -k.speed(),
+    state: "move", t: 0, atk: 0, flash: 0, flee: false, bob: 0,
+  });
+}
 function killEnemy(e, bonusLabel) {
   const k = KINDS[e.kind];
   if (G.comboT > 0) G.combo++; else G.combo = 1;
@@ -381,12 +429,22 @@ function killEnemy(e, bonusLabel) {
   if (G.score > G.hi) { G.hi = G.score; store.set("mtd_hi", G.hi); }
   addFloat(e.x, e.y - 24, "+" + pts + (G.combo > 1 ? "  x" + G.combo : ""), G.combo > 1 ? "#FFD23B" : "#FFFFFF");
   if (bonusLabel) addFloat(e.x, e.y - 44, bonusLabel, "#8CFF6B");
-  burst(e.x, e.y, e.kind === "bird" ? "#F7FBFF" : e.kind === "crab" ? "#FF6B5A" : e.kind === "snake" ? "#7ADF56" : "#B39BB4", 12);
+  burst(e.x, e.y, e.kind === "bird" ? "#F7FBFF" : e.kind === "crab" || e.kind === "boss" ? "#FF6B5A" : e.kind === "snake" ? "#7ADF56" : "#B39BB4", e.kind === "boss" ? 26 : 12);
   if (e.kind === "bird") {
     for (let i = 0; i < 7; i++) G.parts.push({ kind: "feather", x: e.x, y: e.y, vx: rnd(-60, 60), vy: rnd(-70, 10), g: 60, life: rnd(0.8, 1.6), t: 0, rot: rnd(TAU), color: pick(["#FFFFFF", "#3B3E4A", "#FFB03B"]) });
     sfx.squawk();
   } else if (e.kind === "snake") sfx.hiss();
   else if (e.kind === "boar") sfx.grunt();
+  else if (e.kind === "boss") {
+    // the King falls: confetti, fanfare, and the tree breathes again
+    for (let i = 0; i < 22; i++) burst(e.x + rnd(-30, 30), e.y + rnd(-30, 10), pick(["#FFD23B", "#FF8A5C", "#8CFF6B", "#7FE3FF", "#FF9CCB"]), 2);
+    G.tree.hp = Math.min(G.tree.max, G.tree.hp + 30);
+    const frac = G.tree.hp / G.tree.max;
+    G.tree.stage = frac > 0.66 ? 0 : frac > 0.33 ? 1 : 2;
+    banner("THE KING HAS FALLEN!", "+30 tree HP", 2.2);
+    sfx.jingleHome();
+    shake(10);
+  }
   else sfx.pop();
   e.dead = true;
 }
@@ -402,27 +460,56 @@ function updateEnemy(e, dt) {
   const k = KINDS[e.kind];
   if (e.state === "move") {
     if (e.kind === "bird") {
-      // fly toward the canopy edge
-      const tx = CANOPY.x + Math.sign(e.vx) * -1 * (CANOPY.r - 8), ty = CANOPY.y + rndSeeded(e);
-      const dx = tx - e.x, dy = ty - e.y, d = Math.hypot(dx, dy);
-      if (d < 14) { e.state = "attack"; e.atk = rnd(0.2, 0.5); }
-      else {
-        const sp = k.speed();
-        e.x += dx / d * sp * dt;
-        e.y += dy / d * sp * dt + Math.sin(e.t * 6 + e.bob) * 18 * dt;
+      // from wave 6, birds close to the canopy may tuck in and dive-bomb
+      if (G.wave >= 6 && !e.diveChecked && Math.hypot(e.x - CANOPY.x, e.y - CANOPY.y) < 300) {
+        e.diveChecked = true;
+        if (Math.random() < 0.3) {
+          const d = Math.hypot(CANOPY.x - e.x, CANOPY.y - e.y) || 1;
+          const sp = k.speed() * 2.2;
+          e.diving = true;
+          e.dvx = (CANOPY.x - e.x) / d * sp;
+          e.dvy = (CANOPY.y - e.y) / d * sp;
+          sfx.alarm();
+        }
+      }
+      if (e.diving) {
+        e.x += e.dvx * dt; e.y += e.dvy * dt;
+        if (Math.hypot(e.x - CANOPY.x, e.y - CANOPY.y) < 22) { e.diving = false; e.state = "attack"; e.atk = 0.1; }
+      } else {
+        // fly toward the canopy edge
+        const tx = CANOPY.x + Math.sign(e.vx) * -1 * (CANOPY.r - 8), ty = CANOPY.y + rndSeeded(e);
+        const dx = tx - e.x, dy = ty - e.y, d = Math.hypot(dx, dy);
+        if (d < 14) { e.state = "attack"; e.atk = rnd(0.2, 0.5); }
+        else {
+          const sp = k.speed();
+          e.x += dx / d * sp * dt;
+          e.y += dy / d * sp * dt + Math.sin(e.t * 6 + e.bob) * 18 * dt;
+        }
       }
     } else {
-      const targetX = TREE_X + (e.x > TREE_X ? 26 : -26);
+      const standoff = e.kind === "boss" ? 46 : 26;
+      const targetX = TREE_X + (e.x > TREE_X ? standoff : -standoff);
       if (Math.abs(e.x - targetX) < 8) { e.state = "attack"; e.atk = rnd(0.2, 0.6); }
       else e.x += e.vx * dt;
       if (e.kind === "boar") e.y = GROUND - 14 - Math.abs(Math.sin(e.t * 9)) * 8;
+      if (e.kind === "boss") e.y = GROUND - 24 - Math.abs(Math.sin(e.t * 4)) * 4;
     }
   } else if (e.state === "attack") {
     e.atk -= dt;
     if (e.atk <= 0) {
       e.atk = k.atkCd;
-      damageTree(k.dmg, e.x, e.y);
-      if (e.kind === "crab") sfx.crabClick();
+      const m = G.monkey;
+      // a ground attacker next to a low monkey pinches HIM instead of the tree
+      if (e.kind !== "bird" && m.mode === "tree" && m.stunT <= 0 &&
+          m.y > CLIMB_MAX - 50 && Math.abs(e.x - m.x) < 70) {
+        m.stunT = 0.8;
+        shake(6);
+        addFloat(m.x, m.y - 52, "OUCH!", "#FF8A5C");
+        sfx.grunt();
+      } else {
+        damageTree(k.dmg, e.x, e.y);
+      }
+      if (e.kind === "crab" || e.kind === "boss") sfx.crabClick();
       else if (e.kind === "boar") { sfx.grunt(); shake(5); }
       else sfx.chomp();
     }
@@ -536,9 +623,22 @@ function updateArrive(dt) {
 }
 
 // --------------------------- Throwing ----------------------------
+// Throws are limited to a cone: nearly straight up, down to ~20° below
+// horizontal. Steep downward shots are impossible, so height creates a
+// blind spot at the trunk base — climb down to cover it (or use the stick).
+const AIM_UP = -1.54, AIM_DOWN = 0.35; // radians vs horizontal, y-down
+function clampAim(raw) {
+  const facingRight = Math.cos(raw) >= 0;
+  const rel = facingRight ? raw : (raw >= 0 ? Math.PI - raw : -Math.PI - raw);
+  const c = clamp(rel, AIM_UP, AIM_DOWN);
+  return {
+    a: facingRight ? c : (c >= 0 ? Math.PI - c : -Math.PI - c),
+    clamped: c !== rel,
+  };
+}
 function handPos() {
   const m = G.monkey;
-  const a = aimAngle();
+  const a = clampAim(aimAngle()).a;
   return { x: m.x + Math.cos(a) * 22 + m.face * 4, y: m.y - 14 + Math.sin(a) * 22 };
 }
 function aimAngle() {
@@ -546,22 +646,50 @@ function aimAngle() {
   return Math.atan2(mouse.y - (m.y - 14), mouse.x - m.x);
 }
 function throwBanana() {
-  if (G.state !== "play" || G.paused || G.bananaCd > 0) return;
+  if (G.state !== "play" || G.paused || G.bananaCd > 0 || G.monkey.stunT > 0) return;
   G.bananaCd = 0.24;
-  const h = handPos(), a = aimAngle(), sp = 640;
+  const h = handPos(), a = clampAim(aimAngle()).a, sp = 640;
   G.shots.push({ kind: "banana", x: h.x, y: h.y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, g: 1050, r: 12, spin: rnd(TAU), t: 0 });
   G.monkey.throwT = 0.18;
   G.monkey.face = Math.cos(a) >= 0 ? 1 : -1;
   sfx.throwBanana();
 }
 function throwCoconut() {
-  if (G.state !== "play" || G.paused || G.cocoCd > 0) return;
+  if (G.state !== "play" || G.paused || G.cocoCd > 0 || G.monkey.stunT > 0) return;
   G.cocoCd = 1.25;
-  const h = handPos(), a = aimAngle(), sp = 500;
+  const h = handPos(), a = clampAim(aimAngle()).a, sp = 500;
   G.shots.push({ kind: "coco", x: h.x, y: h.y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, g: 1500, r: 14, spin: rnd(TAU), t: 0, bounced: false });
   G.monkey.throwT = 0.22;
   G.monkey.face = Math.cos(a) >= 0 ? 1 : -1;
   sfx.throwCoco();
+}
+function throwClam() {
+  if (G.state !== "play" || G.paused || !G.heldClam || G.monkey.stunT > 0) return;
+  G.heldClam = false;
+  const h = handPos(), a = clampAim(aimAngle()).a, sp = 520;
+  G.shots.push({ kind: "clam", x: h.x, y: h.y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, g: 1200, r: 14, spin: rnd(TAU), t: 0 });
+  G.monkey.throwT = 0.22;
+  G.monkey.face = Math.cos(a) >= 0 ? 1 : -1;
+  sfx.throwCoco();
+}
+// Stick bonk: hits anything within arm's-and-stick's reach of the monkey —
+// which only covers ground enemies when he has climbed down low.
+function swing() {
+  if (G.state !== "play" || G.paused || G.monkey.stunT > 0) return;
+  const m = G.monkey;
+  if (m.swingCd > 0) return;
+  m.swingCd = 0.6; m.swingT = 0.25;
+  sfx.bonk();
+  for (const e of G.enemies) {
+    if (e.dead || e.flee) continue;
+    if ((e.x - m.x) ** 2 + (e.y - m.y) ** 2 < 80 * 80) {
+      e.hp -= 2; e.flash = 1;
+      e.x += Math.sign(e.x - m.x || 1) * 26;
+      burst(e.x, e.y, "#FFD23B", 8);
+      addFloat(e.x, e.y - 26, "BONK!", "#FFD23B");
+      if (e.hp <= 0) killEnemy(e);
+    }
+  }
 }
 function explodeCoco(s) {
   sfx.crack(); shake(7);
@@ -594,6 +722,22 @@ function updateShots(dt) {
           sfx.splat();
           if (e.hp <= 0) killEnemy(e); else addFloat(e.x, e.y - 20, "-1", "#FFFFFF");
           s.dead = true;
+        } else if (s.kind === "clam") {
+          // pearl strike: banish this species for the rest of the wave
+          G.parts.push({ kind: "ring", x: s.x, y: s.y, vx: 0, vy: 0, g: 0, life: 0.45, t: 0, rot: 0, color: "#FF9CCB" });
+          burst(s.x, s.y, "#FFC9DE", 14);
+          if (e.kind === "boss") {
+            e.hp -= 5; e.flash = 1;
+            addFloat(e.x, e.y - 40, "The King resists! -5", "#FF9CCB");
+            if (e.hp <= 0) killEnemy(e);
+            sfx.crack();
+          } else {
+            G.bannedKind = e.kind;
+            killEnemy(e, "BANISHED!");
+            banner(e.kind.toUpperCase() + "S BANISHED!", "None will return this wave", 2);
+            sfx.jingleHome();
+          }
+          s.dead = true;
         } else {
           explodeCoco(s);
         }
@@ -606,6 +750,11 @@ function updateShots(dt) {
       if (s.kind === "banana") {
         burst(s.x, GROUND - 4, "#FFD23B", 6);
         sfx.splat();
+        s.dead = true;
+      } else if (s.kind === "clam") {
+        burst(s.x, GROUND - 4, "#FFC9DE", 10);
+        addFloat(s.x, GROUND - 30, "the clam shattered…", "#FFC9DE");
+        sfx.crack();
         s.dead = true;
       } else if (!s.bounced && Math.abs(s.vy) > 260) {
         s.bounced = true; s.y = GROUND - 4; s.vy *= -0.45; s.vx *= 0.75;
@@ -659,6 +808,9 @@ function update(dt) {
   m.blink -= dt;
   if (m.blink < -3) m.blink = rnd(0.1, 0.18);
   m.throwT = Math.max(0, m.throwT - dt);
+  m.swingT = Math.max(0, m.swingT - dt);
+  m.swingCd = Math.max(0, m.swingCd - dt);
+  m.stunT = Math.max(0, m.stunT - dt);
   G.bananaCd = Math.max(0, G.bananaCd - dt);
   G.cocoCd = Math.max(0, G.cocoCd - dt);
   G.comboT = Math.max(0, G.comboT - dt);
@@ -676,21 +828,40 @@ function update(dt) {
   }
   if (G.state === "play") {
     G.playT += dt;
-    // climbing
+    // climbing (not while seeing stars)
     let dy = 0;
     if (keys.KeyW || keys.ArrowUp || touchBtns.up.held) dy -= 1;
     if (keys.KeyS || keys.ArrowDown || touchBtns.down.held) dy += 1;
-    if (dy !== 0) {
+    if (dy !== 0 && m.stunT <= 0) {
       m.y = clamp(m.y + dy * 240 * dt, CLIMB_MIN, CLIMB_MAX);
       m.cycle += dt * 10;
       if (Math.random() < dt * 2.5) dropLeaf();
     }
     if (mouse.lmb) throwBanana();
-    // spawning
+    // clam pickup: climb all the way down and grab it
+    if (G.clam && m.stunT <= 0 && m.y > CLIMB_MAX - 40) {
+      G.clam = null;
+      G.heldClam = true;
+      sfx.chatter();
+      addFloat(TREE_X + 40, GROUND - 44, "CLAM! (Q to throw)", "#FF9CCB");
+    }
+    // spawning: singles, and from wave 4 the occasional squad of three
     if (G.toSpawn > 0) {
       G.spawnT -= dt;
-      if (G.spawnT <= 0) { G.spawnT = G.interval * rnd(0.7, 1.3); G.toSpawn--; spawnEnemy(); }
-    } else if (G.enemies.length === 0) {
+      if (G.spawnT <= 0) {
+        G.spawnT = G.interval * rnd(0.7, 1.3);
+        const kind = pickKind();
+        if (!kind) {
+          G.toSpawn = 0; // everything spawnnable is banished — wave collapses
+        } else if (G.wave >= 4 && !G.bossWave && G.toSpawn >= 3 && Math.random() < 0.25) {
+          G.toSpawn -= 3;
+          G.squadQueue.push({ kind, delay: 0 }, { kind, delay: 0.35 }, { kind, delay: 0.7 });
+        } else {
+          G.toSpawn--;
+          spawnEnemy(kind);
+        }
+      }
+    } else if (G.enemies.length === 0 && G.squadQueue.length === 0) {
       if (G.waveLull <= 0) {
         G.waveLull = 3;
         banner("WAVE " + G.wave + " CLEAR!", "+15 tree HP", 2);
@@ -698,9 +869,21 @@ function update(dt) {
         const frac = G.tree.hp / G.tree.max;
         G.tree.stage = frac > 0.66 ? 0 : frac > 0.33 ? 1 : 2;
         sfx.heal();
+        // sometimes the tide leaves a gift at the trunk base…
+        if (!G.heldClam && Math.random() < 0.45) G.clam = { t: 0 };
       }
       G.waveLull -= dt;
       if (G.waveLull <= 0) { G.waveLull = 0; startWave(G.wave + 1); }
+    }
+    for (const q of G.squadQueue) { q.delay -= dt; if (q.delay <= 0) spawnEnemy(q.kind); }
+    G.squadQueue = G.squadQueue.filter(q => q.delay > 0);
+    // low tree HP: the heartbeat of a worried monkey
+    if (G.tree.hp / G.tree.max < 0.25) {
+      G.heartT -= dt;
+      if (G.heartT <= 0) {
+        G.heartT = lerp(0.5, 0.95, G.tree.hp / (G.tree.max * 0.25));
+        sfx.heartbeat();
+      }
     }
     for (const e of G.enemies) updateEnemy(e, dt);
     G.enemies = G.enemies.filter(e => !e.dead);
@@ -740,6 +923,7 @@ function render() {
   drawSky();
   drawSea();
   drawGround();
+  if (G.clam) drawClamPickup();
 
   // fallen tree scrolling away
   if (G.fallenTree) drawTree(G.fallenTree.x, G.fallenTree.angle, G.fallenTree.stage, G.fallenTree.seed);
@@ -1037,17 +1221,30 @@ function drawMonkey() {
   cx.fillStyle = "#8A5B33";
   cx.beginPath(); cx.arc(4.5, -20.5, 1, 0, TAU); cx.arc(8, -20.5, 1, 0, TAU); cx.fill();
 
-  // throwing arm — aims at the mouse
+  // hip-tucked clam when carrying one
+  if (G.heldClam && !running) drawClamIcon(-15, 8, 0.55, 0.15);
+
+  // throwing arm — aims at the mouse (within the throw cone)
   if (!running) {
+    const aim = clampAim(aimAngle());
     // mirror the aim angle across the vertical axis when the sprite is flipped
-    let a = f === 1 ? aimAngle() : Math.PI - aimAngle();
-    if (m.throwT > 0) a -= (m.throwT / 0.2) * 1.6; // follow-through
+    let a = f === 1 ? aim.a : Math.PI - aim.a;
+    if (m.swingT > 0) {
+      a = -1.9 + (1 - m.swingT / 0.25) * 2.7;  // big stick sweep
+    } else if (m.throwT > 0) a -= (m.throwT / 0.2) * 1.6; // follow-through
     const ax = 6, ay = -8;
     const hx = ax + Math.cos(a) * 20, hy = ay + Math.sin(a) * 20;
     cx.strokeStyle = fur; cx.lineWidth = 8; cx.lineCap = "round";
     cx.beginPath(); cx.moveTo(ax, ay); cx.lineTo(hx, hy); cx.stroke();
-    // held ammo
-    if (G.state === "play" && m.throwT <= 0) {
+    if (m.swingT > 0) {
+      // driftwood stick
+      const tx2 = ax + Math.cos(a) * 54, ty2 = ay + Math.sin(a) * 54;
+      cx.strokeStyle = "#8A5228"; cx.lineWidth = 7;
+      cx.beginPath(); cx.moveTo(hx, hy); cx.lineTo(tx2, ty2); cx.stroke();
+      cx.strokeStyle = "#B5713A"; cx.lineWidth = 3.5;
+      cx.beginPath(); cx.moveTo(hx, hy); cx.lineTo(tx2, ty2); cx.stroke();
+    } else if (G.state === "play" && m.throwT <= 0) {
+      // held ammo
       cx.save();
       cx.translate(hx, hy);
       cx.scale(f, 1); // un-mirror the ammo art
@@ -1058,6 +1255,25 @@ function drawMonkey() {
   } else {
     cx.strokeStyle = fur; cx.lineWidth = 8;
     cx.beginPath(); cx.moveTo(6, -8); cx.lineTo(20, 0); cx.stroke();
+  }
+
+  // stun: little stars circling his head
+  if (m.stunT > 0) {
+    cx.fillStyle = "#FFE14D";
+    for (let i = 0; i < 3; i++) {
+      const sa = G.t * 8 + i * (TAU / 3);
+      cx.save();
+      cx.translate(4 + Math.cos(sa) * 16, -44 + Math.sin(sa) * 4);
+      cx.rotate(sa);
+      cx.beginPath();
+      for (let j = 0; j < 5; j++) {
+        const a1 = j / 5 * TAU, a2 = a1 + TAU / 10;
+        cx.lineTo(Math.cos(a1) * 4.5, Math.sin(a1) * 4.5);
+        cx.lineTo(Math.cos(a2) * 2, Math.sin(a2) * 2);
+      }
+      cx.closePath(); cx.fill();
+      cx.restore();
+    }
   }
   cx.restore();
 }
@@ -1094,6 +1310,7 @@ function drawEnemy(e) {
   if (e.kind === "bird") drawBird(e, dir);
   else if (e.kind === "crab") drawCrab(e, dir);
   else if (e.kind === "snake") drawSnake(e, dir);
+  else if (e.kind === "boss") drawBoss(e, dir);
   else drawBoar(e, dir);
   if (e.flash > 0.4) {
     cx.globalCompositeOperation = "lighter";
@@ -1103,10 +1320,11 @@ function drawEnemy(e) {
   }
   // hp pips for tanky enemies
   if (e.maxhp > 2 && e.hp < e.maxhp && !e.flee) {
+    const bw = e.kind === "boss" ? 72 : 32;
     cx.fillStyle = "rgba(0,0,0,0.35)";
-    cx.fillRect(-16, -e.r - 14, 32, 5);
+    cx.fillRect(-bw / 2, -e.r - 14, bw, 5);
     cx.fillStyle = "#8CFF6B";
-    cx.fillRect(-16, -e.r - 14, 32 * e.hp / e.maxhp, 5);
+    cx.fillRect(-bw / 2, -e.r - 14, bw * e.hp / e.maxhp, 5);
   }
   cx.restore();
 }
@@ -1114,11 +1332,16 @@ function drawBird(e, dir) {
   cx.scale(-dir, 1); // art faces left by default; flip to face travel direction
   const peck = e.state === "attack" ? Math.sin(e.t * 14) * 0.35 : 0;
   const flap = Math.sin(e.t * 12) * 0.9;
+  const body = e.diving ? "#6B2E3A" : "#3B3E4A";  // dive-bombers flush angry red
+  if (e.diving) {
+    cx.strokeStyle = "rgba(255,120,100,0.5)"; cx.lineWidth = 3; cx.lineCap = "round";
+    cx.beginPath(); cx.moveTo(20, -8); cx.lineTo(34, -14); cx.moveTo(22, 4); cx.lineTo(36, 2); cx.stroke();
+  }
   // tail
   cx.fillStyle = "#2E6BD6";
   cx.beginPath(); cx.moveTo(14, -2); cx.lineTo(28, -10); cx.lineTo(26, 4); cx.closePath(); cx.fill();
   // body
-  cx.fillStyle = "#3B3E4A";
+  cx.fillStyle = body;
   cx.beginPath(); cx.ellipse(0, 0, 16, 13, 0, 0, TAU); cx.fill();
   cx.fillStyle = "#F7FBFF";
   cx.beginPath(); cx.ellipse(-5, 3, 8, 8, 0, 0, TAU); cx.fill();
@@ -1131,7 +1354,7 @@ function drawBird(e, dir) {
   // head + toucan beak
   cx.save();
   cx.translate(-12, -7); cx.rotate(peck);
-  cx.fillStyle = "#3B3E4A";
+  cx.fillStyle = body;
   cx.beginPath(); cx.arc(0, 0, 8, 0, TAU); cx.fill();
   cx.fillStyle = "#FFFFFF";
   cx.beginPath(); cx.arc(-2, -1, 3.4, 0, TAU); cx.fill();
@@ -1238,18 +1461,83 @@ function drawBoar(e, dir) {
   cx.beginPath(); cx.moveTo(24, -4); cx.quadraticCurveTo(32, -8 + gallop * 3, 30, -1); cx.stroke();
 }
 
+// King Pincher: a crab of unreasonable size wearing a golden kelp crown
+function drawBoss(e, dir) {
+  cx.save();
+  cx.scale(2.2, 2.2);
+  drawCrab(e, dir);
+  cx.fillStyle = "#FFD23B";
+  cx.beginPath();
+  cx.moveTo(-13, -16); cx.lineTo(-11, -27); cx.lineTo(-9, -16);
+  cx.moveTo(-3, -16);  cx.lineTo(0, -31);   cx.lineTo(3, -16);
+  cx.moveTo(9, -16);   cx.lineTo(11, -27);  cx.lineTo(13, -16);
+  cx.closePath(); cx.fill();
+  cx.fillRect(-14, -17, 28, 3);
+  cx.fillStyle = "#E0A61C";
+  cx.beginPath(); cx.arc(0, -25, 1.8, 0, TAU); cx.fill();
+  cx.restore();
+}
+
+// --------------------------- Clam art -----------------------------
+function drawClamIcon(x, y, s, open = 0.5, rot = 0) {
+  cx.save();
+  cx.translate(x, y); cx.rotate(rot); cx.scale(s, s);
+  // pearl peeks out between the shells
+  cx.fillStyle = "#FFF6FA";
+  cx.beginPath(); cx.arc(0, -3, 5, 0, TAU); cx.fill();
+  cx.fillStyle = "rgba(140,180,220,0.4)";
+  cx.beginPath(); cx.arc(1.5, -1.8, 2, 0, TAU); cx.fill();
+  // top shell (opens upward)
+  cx.save();
+  cx.rotate(-open);
+  cx.fillStyle = "#FFB8D9";
+  cx.beginPath(); cx.arc(0, 0, 11, Math.PI, 0); cx.closePath(); cx.fill();
+  cx.strokeStyle = "#E886B8"; cx.lineWidth = 1.5;
+  cx.beginPath();
+  cx.moveTo(0, 0); cx.lineTo(-6, -8);
+  cx.moveTo(0, 0); cx.lineTo(0, -10);
+  cx.moveTo(0, 0); cx.lineTo(6, -8);
+  cx.stroke();
+  cx.restore();
+  // bottom shell
+  cx.fillStyle = "#FF9CCB";
+  cx.beginPath(); cx.arc(0, 0, 11, 0, Math.PI); cx.closePath(); cx.fill();
+  cx.restore();
+}
+function drawClamPickup() {
+  const x = TREE_X + 46, y = GROUND - 8;
+  const pulse = 0.5 + Math.sin(G.t * 4) * 0.5;
+  cx.fillStyle = `rgba(255,214,240,${0.22 + pulse * 0.2})`;
+  cx.beginPath(); cx.arc(x, y - 3, 20 + pulse * 5, 0, TAU); cx.fill();
+  drawClamIcon(x, y, 1.15, 0.3 + pulse * 0.3);
+  // wandering sparkle
+  const sa = G.t * 3;
+  cx.save();
+  cx.translate(x + Math.cos(sa) * 17, y - 11 + Math.sin(sa * 1.7) * 6);
+  cx.rotate(sa);
+  cx.fillStyle = "#FFFFFF";
+  cx.beginPath();
+  for (let i = 0; i < 4; i++) { cx.rotate(TAU / 4); cx.lineTo(0, -5); cx.lineTo(1.5, -1.5); }
+  cx.closePath(); cx.fill();
+  cx.restore();
+}
+
 // --------------------------- Shots art ----------------------------
 function drawShot(s) {
   if (s.kind === "banana") drawBananaIcon(s.x, s.y, 1, s.spin);
+  else if (s.kind === "clam") drawClamIcon(s.x, s.y, 1, 0.12, s.spin);
   else drawCocoIcon(s.x, s.y, 1.05, s.spin);
 }
 function drawTrajectory() {
   if (G.state !== "play" || G.paused) return;
-  const h = handPos(), a = aimAngle();
+  const h = handPos(), aim = clampAim(aimAngle());
+  const a = aim.a;
   const coco = G.cocoCd <= 0 && (keys.KeyE || keys.ShiftLeft);
   const sp = coco ? 500 : 640, g = coco ? 1500 : 1050;
   let x = h.x, y = h.y, vx = Math.cos(a) * sp, vy = Math.sin(a) * sp;
-  cx.fillStyle = coco ? "rgba(120,72,32,0.5)" : "rgba(255,210,59,0.55)";
+  // red dots = the aim is outside the throw cone and has been clamped
+  cx.fillStyle = aim.clamped ? "rgba(255,90,80,0.55)"
+    : coco ? "rgba(120,72,32,0.5)" : "rgba(255,210,59,0.55)";
   const step = 0.05;
   for (let i = 0; i < 14; i++) {
     vy += g * step; x += vx * step; y += vy * step;
@@ -1339,6 +1627,13 @@ function drawHUD() {
     roundRect(bx, by, Math.max(14, bw * frac), bh / 2, 10); cx.fill();
   }
   txt("🌴 " + Math.ceil(G.tree.hp), bx + bw / 2, by + bh / 2 + 1, 15, "#FFFFFF", "center");
+  // low HP: the bar itself panics
+  if (frac < 0.25 && G.state === "play") {
+    cx.globalAlpha = 0.25 + 0.25 * Math.sin(G.t * 8);
+    cx.fillStyle = "#FF5A4E";
+    roundRect(bx - 3, by - 3, bw + 6, bh + 6, 12); cx.fill();
+    cx.globalAlpha = 1;
+  }
   // coconut cooldown
   const cy = by + bh + 14;
   drawCocoIcon(bx + 12, cy + 6, 0.8);
@@ -1348,6 +1643,11 @@ function drawHUD() {
   cx.fillStyle = cf >= 1 ? "#8CFF6B" : "#C9A94A";
   roundRect(bx + 28, cy, Math.max(8, 110 * cf), 12, 6); cx.fill();
   if (cf >= 1) txt("READY", bx + 83, cy + 7, 11, "#FFFFFF", "center");
+  // carried clam
+  if (G.heldClam) {
+    drawClamIcon(bx + 12, cy + 30, 0.75, 0.3);
+    txt(touchMode ? "tap 🦪 to throw" : "Q — banish a species!", bx + 28, cy + 31, 12, "#FFC9DE", "left");
+  }
 
   // score block
   txt("SCORE  " + G.score, W - 16, 26, 24, "#FFFFFF", "right");
@@ -1378,20 +1678,31 @@ function drawHUD() {
   // hints
   if (G.playT < 14 && G.state === "play" && !touchMode) {
     cx.globalAlpha = clamp(14 - G.playT, 0, 1) * 0.9;
-    txt("W/S climb · aim with mouse · CLICK banana · RIGHT-CLICK / E coconut · M mute · P pause", W / 2, H - 16, 14, "#FFFFFF", "center");
+    txt("W/S climb · CLICK banana · RIGHT-CLICK/E coconut · F stick bonk · Q clam · M mute · P pause", W / 2, H - 16, 14, "#FFFFFF", "center");
     cx.globalAlpha = 1;
   }
   if (muted) txt("🔇", 24, H - 22, 20, "#FFFFFF", "left", false);
 
   // touch buttons
   if (touchMode && G.state === "play") {
-    for (const k of ["up", "down", "coco"]) {
+    for (const k of ["up", "down", "coco", "swing", "clam"]) {
+      if (k === "clam" && !G.heldClam) continue;
       const btn = touchBtns[k];
       cx.globalAlpha = btn.held ? 0.75 : 0.4;
       cx.fillStyle = "#FFFFFF";
       cx.beginPath(); cx.arc(btn.x, btn.y, btn.r, 0, TAU); cx.fill();
       cx.globalAlpha = 0.9;
       if (k === "coco") drawCocoIcon(btn.x, btn.y, 1.4);
+      else if (k === "clam") drawClamIcon(btn.x, btn.y, 1.3, 0.3);
+      else if (k === "swing") {
+        cx.save();
+        cx.translate(btn.x, btn.y); cx.rotate(-0.7);
+        cx.strokeStyle = "#8A5228"; cx.lineWidth = 9; cx.lineCap = "round";
+        cx.beginPath(); cx.moveTo(-14, 12); cx.lineTo(14, -12); cx.stroke();
+        cx.strokeStyle = "#B5713A"; cx.lineWidth = 4;
+        cx.beginPath(); cx.moveTo(-14, 12); cx.lineTo(14, -12); cx.stroke();
+        cx.restore();
+      }
       else txt(btn.label, btn.x, btn.y + 2, 30, "#1B5E63", "center", false);
       cx.globalAlpha = 1;
     }
@@ -1424,13 +1735,15 @@ function drawTitle() {
   txt(touchMode ? "TAP TO START!" : "CLICK TO START!", 0, 0, 36, "#FFFFFF", "center");
   cx.restore();
 
-  const cy = 380;
+  const cy = 366;
   cx.fillStyle = "rgba(10,45,60,0.55)";
-  roundRect(W / 2 - 40, cy - 30, 420, 132, 16); cx.fill();
-  txt("W / S  or  ▲ ▼  — climb up & down", W / 2 - 20, cy, 17, "#D8F7FF", "left");
-  txt("CLICK — throw banana  (fast & zippy)", W / 2 - 20, cy + 28, 17, "#FFE9A8", "left");
-  txt("RIGHT-CLICK / E — coconut  (BIG BOOM)", W / 2 - 20, cy + 56, 17, "#FFC9A8", "left");
-  txt("Lose your tree? Run & claim a new one!", W / 2 - 20, cy + 84, 17, "#C9FFB8", "left");
+  roundRect(W / 2 - 40, cy - 26, 430, 178, 16); cx.fill();
+  txt("W / S  or  ▲ ▼  — climb up & down", W / 2 - 20, cy, 16, "#D8F7FF", "left");
+  txt("CLICK — banana · RIGHT-CLICK / E — coconut (BOOM)", W / 2 - 20, cy + 26, 16, "#FFE9A8", "left");
+  txt("You can't throw straight down — climb low to defend low!", W / 2 - 20, cy + 52, 16, "#FFC9A8", "left");
+  txt("F — stick bonk (reaches the ground when you're low)", W / 2 - 20, cy + 78, 16, "#FFD8B8", "left");
+  txt("Q — throw a found clam to BANISH a species", W / 2 - 20, cy + 104, 16, "#FFC9DE", "left");
+  txt("Lose your tree? Run & claim a new one!", W / 2 - 20, cy + 130, 16, "#C9FFB8", "left");
   if (G.hi > 0) txt("BEST SCORE  " + G.hi, W / 2, 320, 18, "#FFE9A8", "center");
 }
 function drawPaused() {
