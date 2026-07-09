@@ -16,7 +16,7 @@ to `main` auto-deploys to that link via GitHub Pages.
 | --- | --- |
 | Climb up / down the trunk | `W` / `S` or `↑` / `↓` |
 | Aim | Mouse (dotted arc previews your throw) |
-| Throw banana — fast & zippy | Click (hold to keep throwing) or `Space` |
+| Throw banana — fast & zippy, limited stash | Click (hold to keep throwing) or `Space` |
 | Throw coconut — heavy, **splash damage** | Right-click or `E` / `Shift` |
 | Stick bonk — melee, reaches the ground only when you're low | `F` |
 | Throw a found clam — **banishes** that species for the wave | `Q` |
@@ -24,7 +24,13 @@ to `main` auto-deploys to that link via GitHub Pages.
 
 You can't throw steeply downward — the higher you climb, the bigger the
 blind spot at the trunk base. Climb down to defend low (and mind the
-pinches: ground creatures can briefly stun a monkey within reach).
+pinches: ground creatures can briefly stun a monkey within reach, though a
+pinch always shoves attackers back and buys you a moment to climb clear).
+
+Bananas aren't infinite: you carry a bunch of 6, and it regrows one at a
+time rather than instantly, so mashing the throw button just empties the
+bunch faster — pace your throws instead of spamming. The stash tops back
+up whenever you clear a wave or claim a new tree.
 
 Touch controls (climb buttons + coconut button, tap to throw) appear
 automatically on touch devices.

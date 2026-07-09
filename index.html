@@ -194,6 +194,7 @@ const sfx = {
   throwBanana: () => { noiseHit(0.12, 900, 3200, 0.16, "bandpass"); },
   throwCoco:   () => { noiseHit(0.2, 800, 250, 0.22); tone(200, 130, 0.18, "sine", 0.15); },
   splat:       () => { noiseHit(0.14, 1200, 300, 0.22); tone(420, 140, 0.1, "sine", 0.18); },
+  empty:       () => { tone(340, 220, 0.05, "square", 0.1); },
   thunk:       () => { tone(110, 55, 0.14, "sine", 0.45); noiseHit(0.05, 2000, 500, 0.12); },
   crack:       () => { noiseHit(0.05, 3000, 900, 0.3, "highpass"); noiseHit(0.09, 1500, 300, 0.28, "lowpass", 0.04); tone(150, 70, 0.15, "sine", 0.3, 0.02); },
   pop:         () => { tone(600, 1300, 0.07, "sine", 0.22); },
@@ -270,6 +271,9 @@ const CANOPY = { x: TREE_X + 6, y: 172, r: 92 };
 const CLIMB_MIN = 262, CLIMB_MAX = 448;
 
 // ------------------------- Game state ----------------------------
+// Bananas are a stash, not a firehose: burst them out, then wait for
+// the bunch to regrow. Kills spam without ever locking the player out.
+const BANANA_MAX = 6, BANANA_REGROW = 0.75;
 const G = {
   state: "title",          // title | play | falling | running | arrive
   paused: false,
@@ -285,6 +289,7 @@ const G = {
   musicRate: 1,
   clam: null, heldClam: false, bannedKind: null,
   squadQueue: [], bossWave: false, heartT: 0,
+  bananas: BANANA_MAX, bananaRegrow: 0, bananaFlash: 0,
   banner: { text: "", sub: "", t: 0, dur: 0 },
   tree: { hp: 100, max: 100, stage: 0, sway: 0, hitT: 0, fallT: 0, fallAngle: 0, crashed: false, seed: 7 },
   fallenTree: null,        // {x, angle, seed, stage}
@@ -631,6 +636,7 @@ function updateArrive(dt) {
     const checkpoint = Math.max(1, Math.floor(G.wave / 2));
     setWave(checkpoint);
     if (G.bossWave) spawnBoss();  // a checkpoint can land on a King wave
+    G.bananas = BANANA_MAX; G.bananaRegrow = BANANA_REGROW;
     banner("HOME SWEET HOME!", "Tree #" + (G.treesLost + 1) + " — back to Wave " + checkpoint, 2.6);
     sfx.jingleHome();
   }
@@ -661,7 +667,13 @@ function aimAngle() {
 }
 function throwBanana() {
   if (G.state !== "play" || G.paused || G.bananaCd > 0 || G.monkey.stunT > 0) return;
+  if (G.bananas <= 0) {
+    if (G.bananaFlash <= 0) { sfx.empty(); G.bananaFlash = 0.5; }
+    return;
+  }
+  G.bananas--;
   G.bananaCd = 0.24;
+  G.bananaRegrow = BANANA_REGROW;  // the regrow clock restarts on every spend
   const h = handPos(), a = clampAim(aimAngle()).a, sp = 640;
   G.shots.push({ kind: "banana", x: h.x, y: h.y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, g: 1050, r: 12, spin: rnd(TAU), t: 0 });
   G.monkey.throwT = 0.18;
@@ -828,6 +840,12 @@ function update(dt) {
   m.safeT = Math.max(0, m.safeT - dt);
   G.bananaCd = Math.max(0, G.bananaCd - dt);
   G.cocoCd = Math.max(0, G.cocoCd - dt);
+  G.bananaFlash = Math.max(0, G.bananaFlash - dt);
+  // the bunch regrows one banana at a time
+  if (G.bananas < BANANA_MAX) {
+    G.bananaRegrow -= dt;
+    if (G.bananaRegrow <= 0) { G.bananas++; G.bananaRegrow = BANANA_REGROW; }
+  } else G.bananaRegrow = BANANA_REGROW;
   G.comboT = Math.max(0, G.comboT - dt);
   if (G.comboT === 0) G.combo = 0;
   G.banner.t += dt;
@@ -883,6 +901,7 @@ function update(dt) {
         G.tree.hp = Math.min(G.tree.max, G.tree.hp + 15);
         const frac = G.tree.hp / G.tree.max;
         G.tree.stage = frac > 0.66 ? 0 : frac > 0.33 ? 1 : 2;
+        G.bananas = BANANA_MAX; G.bananaRegrow = BANANA_REGROW;
         sfx.heal();
         // sometimes the tide leaves a gift at the trunk base…
         if (!G.heldClam && Math.random() < 0.45) G.clam = { t: 0 };
@@ -1649,8 +1668,26 @@ function drawHUD() {
     roundRect(bx - 3, by - 3, bw + 6, bh + 6, 12); cx.fill();
     cx.globalAlpha = 1;
   }
+  // banana stash — a little bunch that empties and regrows
+  const bny = by + bh + 10;
+  cx.save();
+  if (G.bananaFlash > 0) {
+    const shake2 = Math.sin(G.bananaFlash * 60) * 3;
+    cx.translate(shake2, 0);
+  }
+  for (let i = 0; i < BANANA_MAX; i++) {
+    const filled = i < G.bananas;
+    const growing = !filled && i === G.bananas;
+    cx.save();
+    cx.translate(bx + 10 + i * 15, bny + 4);
+    if (!filled) cx.globalAlpha = growing ? 0.35 + 0.35 * (1 - G.bananaRegrow / BANANA_REGROW) : 0.22;
+    drawBananaIcon(0, 0, 0.42);
+    cx.restore();
+  }
+  cx.restore();
+  if (G.bananas <= 0) txt("regrowing…", bx + BANANA_MAX * 15 + 16, bny + 5, 11, "#FFE9A8", "left");
   // coconut cooldown
-  const cy = by + bh + 14;
+  const cy = bny + 22;
   drawCocoIcon(bx + 12, cy + 6, 0.8);
   cx.fillStyle = "#243B24";
   roundRect(bx + 28, cy, 110, 12, 6); cx.fill();
@@ -1693,7 +1730,7 @@ function drawHUD() {
   // hints
   if (G.playT < 14 && G.state === "play" && !touchMode) {
     cx.globalAlpha = clamp(14 - G.playT, 0, 1) * 0.9;
-    txt("W/S climb · CLICK banana · RIGHT-CLICK/E coconut · F stick bonk · Q clam · M mute · P pause", W / 2, H - 16, 14, "#FFFFFF", "center");
+    txt("W/S climb · CLICK banana (bunch regrows!) · RIGHT-CLICK/E coconut · F bonk · Q clam · M mute · P pause", W / 2, H - 16, 14, "#FFFFFF", "center");
     cx.globalAlpha = 1;
   }
   if (muted) txt("🔇", 24, H - 22, 20, "#FFFFFF", "left", false);
@@ -1750,15 +1787,16 @@ function drawTitle() {
   txt(touchMode ? "TAP TO START!" : "CLICK TO START!", 0, 0, 36, "#FFFFFF", "center");
   cx.restore();
 
-  const cy = 366;
+  const cy = 356;
   cx.fillStyle = "rgba(10,45,60,0.55)";
-  roundRect(W / 2 - 40, cy - 26, 430, 178, 16); cx.fill();
+  roundRect(W / 2 - 40, cy - 26, 430, 204, 16); cx.fill();
   txt("W / S  or  ▲ ▼  — climb up & down", W / 2 - 20, cy, 16, "#D8F7FF", "left");
   txt("CLICK — banana · RIGHT-CLICK / E — coconut (BOOM)", W / 2 - 20, cy + 26, 16, "#FFE9A8", "left");
-  txt("You can't throw straight down — climb low to defend low!", W / 2 - 20, cy + 52, 16, "#FFC9A8", "left");
-  txt("F — stick bonk (reaches the ground when you're low)", W / 2 - 20, cy + 78, 16, "#FFD8B8", "left");
-  txt("Q — throw a found clam to BANISH a species", W / 2 - 20, cy + 104, 16, "#FFC9DE", "left");
-  txt("Lose your tree? Run & claim a new one!", W / 2 - 20, cy + 130, 16, "#C9FFB8", "left");
+  txt("Only " + BANANA_MAX + " bananas at a time — the bunch regrows, so pace your throws", W / 2 - 20, cy + 52, 16, "#FFEBC2", "left");
+  txt("You can't throw straight down — climb low to defend low!", W / 2 - 20, cy + 78, 16, "#FFC9A8", "left");
+  txt("F — stick bonk (reaches the ground when you're low)", W / 2 - 20, cy + 104, 16, "#FFD8B8", "left");
+  txt("Q — throw a found clam to BANISH a species", W / 2 - 20, cy + 130, 16, "#FFC9DE", "left");
+  txt("Lose your tree? Run & claim a new one!", W / 2 - 20, cy + 156, 16, "#C9FFB8", "left");
   if (G.hi > 0) txt("BEST SCORE  " + G.hi, W / 2, 320, 18, "#FFE9A8", "center");
 }
 function drawPaused() {
