@@ -92,8 +92,8 @@ export default async function run() {
         fit.panelX >= 0 && fit.right <= 960 && fit.bottom <= 540, JSON.stringify(fit));
 
       const rows = await page.evaluate(() => window.__mtd.pauseRows().map(r => r.label));
-      rec.check("the pause menu offers resume, controls, and the options",
-        rows.join("|") === "Resume|Controls|Sound|Screen shake|Aim preview", JSON.stringify(rows));
+      rec.check("the pause menu offers resume, controls, medals and the options",
+        rows.join("|") === "Resume|Controls|Medals|Sound|Screen shake|Aim preview", JSON.stringify(rows));
 
       // --- the controls reference is reachable mid-run ---
       const ctrl = await page.evaluate(() => {

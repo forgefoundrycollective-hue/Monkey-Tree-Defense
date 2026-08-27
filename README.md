@@ -76,6 +76,8 @@ automatically on touch devices.
 - The first time each new threat turns up — a shelled hermit, a thieving gull,
   a dive-bomb, a washed-up clam — the game explains it once, so you learn the
   rule instead of guessing at it.
+- Every 10th wave is a milestone — and since those are King waves too, the
+  confetti and fanfare land on top of his entrance rather than instead of it.
 - When the tree is nearly gone, listen for the heartbeat…
 - If the tree's HP hits zero — **TIMBERRR!** — it crashes down (squashing
   anyone underneath), and your monkey runs down the beach to claim a fresh
@@ -84,6 +86,19 @@ automatically on touch devices.
   at 5) — while your score keeps climbing. Beat your best. As the monkey
   sprints off, a card shows how that tree went: waves survived, kills, best
   combo, points, and the upgrades it earned.
+
+## What it remembers
+
+A run is self-contained, but the game keeps a profile between runs: lifetime
+knockouts, Kings felled, trees planted, clams thrown, waves cleared, best wave
+and best score. Ten **medals** sit on top of those tallies, and a few grant a
+small, clearly stated head start on future runs — an extra banana in the bunch,
+a little more tree HP, luckier clams. The title screen shows the shelf; `P` →
+**Medals** shows the full list and your lifetime numbers.
+
+The head starts are deliberately modest so a veteran opens slightly stronger
+without the early waves becoming a formality. `tools/balance.mjs` wipes the
+profile before every measured run, so medals can't quietly inflate the numbers.
 
 ## Tech notes
 
@@ -120,6 +135,8 @@ Playwright is resolved from a local install, a global one, or
 | `controls` | Mouse vs touch throwing, drag-to-aim, pause menu, options and their persistence |
 | `tips` | First-encounter coaching fires once, expires, and resets per run |
 | `audio` | Music layering: the King's ostinato, the night filter, and tempo staying locked across layers |
+| `profile` | Lifetime tallies, medal unlocks and their perks, persistence across reloads |
+| `presentation` | Per-species death debris, the King's entrance, milestone flourishes |
 
 ## Measuring balance
 

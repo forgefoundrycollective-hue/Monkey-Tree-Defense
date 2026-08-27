@@ -38,6 +38,11 @@ const PLAY = ({ simSeconds, skill, takeUpgrades, seed }) => {
   };
   Math.random = rand;
 
+  // Medals persist in localStorage and grant small head starts, so without
+  // this each successive run in the same page would open stronger than the
+  // last and the measurement would drift upward.
+  M.resetProfile();
+
   G.state = "title";
   M.start();
   M.freeze(true);

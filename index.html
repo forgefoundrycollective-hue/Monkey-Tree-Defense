@@ -61,6 +61,66 @@ const opts = {
 };
 function setOpt(k, v) { opts[k] = v; store.set("mtd_" + k, v ? "1" : "0"); }
 
+// --------------------------- Profile -----------------------------
+// What the game remembers between runs. A run is otherwise self-contained,
+// so this is the only thing that makes playing twice different from playing
+// once: lifetime tallies, medals, and the small head starts they grant.
+const PROFILE_KEY = "mtd_profile";
+function blankProfile() {
+  return { runs: 0, waves: 0, bestWave: 1, bestScore: 0, kills: 0, kings: 0,
+           clams: 0, trees: 0, medals: {} };
+}
+function loadProfile() {
+  let saved = {};
+  try { saved = JSON.parse(store.get(PROFILE_KEY) || "{}") || {}; } catch (e) { saved = {}; }
+  return Object.assign(blankProfile(), saved, { medals: saved.medals || {} });
+}
+let profile = loadProfile();
+function saveProfile() { store.set(PROFILE_KEY, JSON.stringify(profile)); }
+function resetProfile() { profile = blankProfile(); saveProfile(); }
+
+// Medals are recognition first. A few also grant a small, clearly stated
+// head start — deliberately modest, so a veteran opens a little stronger
+// without the early waves becoming a formality.
+const MEDALS = [
+  { id: "sprout",  name: "Sprout",          desc: "Clear your first wave",       test: p => p.waves >= 1 },
+  { id: "wave10",  name: "Double Digits",   desc: "Reach wave 10",               test: p => p.bestWave >= 10 },
+  { id: "wave20",  name: "Beach Veteran",   desc: "Reach wave 20",               test: p => p.bestWave >= 20,
+    perk: "+10 max tree HP" },
+  { id: "wave30",  name: "Island Legend",   desc: "Reach wave 30",               test: p => p.bestWave >= 30,
+    perk: "+10 max tree HP" },
+  { id: "king1",   name: "Regicide",        desc: "Fell King Pincher",           test: p => p.kings >= 1,
+    perk: "+1 banana in your bunch" },
+  { id: "king10",  name: "Crown Collector", desc: "Fell 10 Kings",               test: p => p.kings >= 10,
+    perk: "+1 banana in your bunch" },
+  { id: "clams",   name: "Beachcomber",     desc: "Throw 10 clams",              test: p => p.clams >= 10,
+    perk: "clams wash up more often" },
+  { id: "arbor",   name: "Arborist",        desc: "Plant 10 trees",              test: p => p.trees >= 10,
+    perk: "+10 max tree HP" },
+  { id: "kills",   name: "Fruit Salad",     desc: "500 lifetime knockouts",      test: p => p.kills >= 500 },
+  { id: "roller",  name: "High Roller",     desc: "Score 25,000 in a single run", test: p => p.bestScore >= 25000 },
+];
+const hasMedal = id => !!profile.medals[id];
+const medalCount = () => MEDALS.filter(m => hasMedal(m.id)).length;
+// Perks earned from medals, folded into the derived stats below.
+const perkBananas = () => (hasMedal("king1") ? 1 : 0) + (hasMedal("king10") ? 1 : 0);
+const perkTreeHp  = () => (hasMedal("wave20") ? 10 : 0) + (hasMedal("wave30") ? 10 : 0) + (hasMedal("arbor") ? 10 : 0);
+const perkClam    = () => (hasMedal("clams") ? 0.1 : 0);
+
+// Called whenever a lifetime tally moves. Announces anything newly earned.
+function checkMedals() {
+  for (const m of MEDALS) {
+    if (!profile.medals[m.id] && m.test(profile)) {
+      profile.medals[m.id] = 1;
+      G.medalQueue.push(m);
+    }
+  }
+  saveProfile();
+}
+function noteRunScore() {
+  if (G.score > profile.bestScore) { profile.bestScore = G.score; checkMedals(); }
+}
+
 function mulberry32(seed) {
   return function () {
     seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
@@ -249,6 +309,8 @@ const sfx = {
   horn:        () => { [196, 196, 262].forEach((f, i) => tone(f, f * 0.98, 0.3, "sawtooth", 0.2, i * 0.22)); },
   alarm:       () => { tone(700, 1500, 0.18, "square", 0.1); tone(900, 1700, 0.15, "square", 0.08, 0.14); },
   heartbeat:   () => { tone(68, 50, 0.09, "sine", 0.42); tone(62, 46, 0.08, "sine", 0.3, 0.15); },
+  horn2:       () => { [147, 147, 196].forEach((f, i) => tone(f, f * 0.97, 0.42, "sawtooth", 0.17, 0.12 + i * 0.24)); },
+  fanfare:     () => { [523, 659, 784, 1046, 784, 1046].forEach((f, i) => pluck(f, 0.26, i * 0.11, 0.5)); tone(131, 131, 0.7, "triangle", 0.16, 0.1); },
 };
 
 // Cheery 4-bar music loop, pre-rendered into a buffer.
@@ -396,6 +458,8 @@ const G = {
   bananas: BANANA_MAX, bananaRegrow: 0, bananaFlash: 0,
   upgrades: {}, draft: null,
   tipsSeen: {}, tip: null,
+  medalQueue: [], medal: null,
+  kingEntrance: 0, confetti: 0,
   cricketT: 0,
   treeStats: { kills: 0, bestCombo: 0, scoreAt: 0, waveAt: 1, t: 0 },
   summary: null,
@@ -455,6 +519,12 @@ window.__mtd = {
   pausePage: () => pauseMenu.page,
   togglePause: () => togglePause(),
   controlRows: () => controlRows(),
+  profile: () => JSON.parse(JSON.stringify(profile)),
+  resetProfile: () => { resetProfile(); },
+  medals: () => MEDALS.map(m => ({ id: m.id, name: m.name, perk: m.perk || null, earned: !!profile.medals[m.id] })),
+  perks: () => ({ bananas: perkBananas(), treeHp: perkTreeHp(), clam: perkClam() }),
+  checkMedals: () => checkMedals(),
+  fx: () => ({ kingEntrance: G.kingEntrance, confetti: G.confetti, parts: G.parts.length }),
   titleFit: () => {
     const lines = titleLines(), m = titlePanelMetrics(lines);
     cx.font = 'bold 16px "Trebuchet MS", Verdana, sans-serif';
@@ -485,7 +555,7 @@ const UPGRADES = [
 const upgradeById = Object.fromEntries(UPGRADES.map(b => [b.id, b]));
 const lv = id => G.upgrades[id] || 0;
 // Derived stats — every hardcoded value an upgrade can touch reads through these.
-const bananaMax    = () => BANANA_MAX + lv("bunch") * 3;
+const bananaMax    = () => BANANA_MAX + lv("bunch") * 3 + perkBananas();
 const bananaRate   = () => BANANA_REGROW * Math.pow(0.68, lv("ripen"));
 const bananaDamage = () => 1 + lv("ripe");
 const stickReach   = () => 80 + lv("stick") * 34;
@@ -493,7 +563,7 @@ const stickDamage  = () => 2 + lv("stick");
 const cocoBlast    = () => 62 + lv("blast") * 24;
 const cocoDamage   = () => 3 + lv("blast");
 const aimDown      = () => AIM_DOWN + lv("limber") * 0.55;
-const clamChance   = () => 0.45 + lv("pearl") * 0.35;
+const clamChance   = () => 0.45 + lv("pearl") * 0.35 + perkClam();
 const ROMAN = ["", "I", "II", "III", "IV"];
 
 function shouldDraft(wave) { return wave % 3 === 0 || wave % 5 === 0; }
@@ -560,7 +630,11 @@ function startGame() {
   G.upgrades = {}; G.draft = null;
   G.tipsSeen = {}; G.tip = null;
   G.treeStats = { kills: 0, bestCombo: 0, scoreAt: 0, waveAt: 1, t: 0 }; G.summary = null;
-  G.tree.max = 100; G.bananas = BANANA_MAX; G.bananaRegrow = BANANA_REGROW;
+  G.medalQueue.length = 0; G.medal = null;
+  G.kingEntrance = 0; G.confetti = 0;
+  G.tree.max = 100 + perkTreeHp();
+  G.bananas = bananaMax(); G.bananaRegrow = BANANA_REGROW;
+  profile.runs++; checkMedals();
   G.tree.hp = G.tree.max; G.tree.stage = 0;
   G.enemies.length = 0; G.shots.length = 0;
   sfx.chatter();
@@ -597,19 +671,38 @@ function setWave(n) {
 }
 function startWave(n) {
   setWave(n);
+  // Wave 10, 20, 30... are always King waves too (every 10th is a multiple of
+  // 5), so the milestone flourish layers on top of whatever the wave already
+  // is rather than replacing it — a milestone King should feel bigger, not
+  // quieter.
+  const milestone = n % 10 === 0;
   if (G.bossWave) {
     const kings = bossCount();
-    banner(kings > 1 ? kings + " KINGS APPROACH!" : "KING PINCHER APPROACHES!", "Wave " + n, 2.6);
+    // A real entrance: the beach dims, the horn sounds twice, and the sand
+    // jumps as he comes up out of the surf.
+    G.kingEntrance = 2.6;
+    banner(kings > 1 ? kings + " KINGS APPROACH!" : "KING PINCHER", "Wave " + n, 2.6);
     sfx.horn();
+    sfx.horn2();
+    shake(9);
+    for (let i = 0; i < 10; i++)
+      G.parts.push({ kind: "dust", x: W - 90 - i * 22, y: GROUND - rnd(0, 14), vx: 0, vy: 0,
+        g: 0, life: rnd(0.7, 1.3), t: 0, rot: 0, color: "#F0D9A0" });
     for (let i = 0; i < kings; i++) spawnBoss(i);
   } else {
     if (G.modifier) { banner("WAVE " + n + " — " + G.modifier.name, G.modifier.sub, 2.6); sfx.alarm(); }
+    else if (n % 10 === 0) banner("WAVE " + n + "!", "the beach will remember this", 3);
     else banner("WAVE " + n, n === 1 ? "Protect your tree!" : "They're getting faster!");
-    sfx.jingleWave();
+    if (n % 10 !== 0) sfx.jingleWave();
+  }
+  if (milestone) {
+    G.confetti = 2.2;
+    sfx.fanfare();
+    shake(5);
   }
 }
 function togglePause() {
-  if (G.paused && pauseMenu.page === "controls") { pauseMenu.page = "menu"; return; }
+  if (G.paused && pauseMenu.page !== "menu") { pauseMenu.page = "menu"; return; }
   pauseMenu.page = "menu";
   G.paused = !G.paused;
 }
@@ -716,16 +809,14 @@ function killEnemy(e, bonusLabel) {
   G.score += pts;
   G.treeStats.kills++;
   G.treeStats.bestCombo = Math.max(G.treeStats.bestCombo, G.combo);
+  profile.kills++;
+  if (e.kind === "boss") profile.kings++;
   if (G.score > G.hi) { G.hi = G.score; store.set("mtd_hi", G.hi); }
+  noteRunScore();
   addFloat(e.x, e.y - 24, "+" + pts + (G.combo > 1 ? "  x" + G.combo : ""), G.combo > 1 ? "#FFD23B" : "#FFFFFF");
   if (bonusLabel) addFloat(e.x, e.y - 44, bonusLabel, "#8CFF6B");
-  burst(e.x, e.y, e.kind === "bird" ? "#F7FBFF" : e.kind === "crab" || e.kind === "boss" ? "#FF6B5A" : e.kind === "snake" ? "#7ADF56" : "#B39BB4", e.kind === "boss" ? 26 : 12);
-  if (e.kind === "bird") {
-    for (let i = 0; i < 7; i++) G.parts.push({ kind: "feather", x: e.x, y: e.y, vx: rnd(-60, 60), vy: rnd(-70, 10), g: 60, life: rnd(0.8, 1.6), t: 0, rot: rnd(TAU), color: pick(["#FFFFFF", "#3B3E4A", "#FFB03B"]) });
-    sfx.squawk();
-  } else if (e.kind === "snake") sfx.hiss();
-  else if (e.kind === "boar") sfx.grunt();
-  else if (e.kind === "boss") {
+  deathEffect(e);
+  if (e.kind === "boss") {
     // the King falls: confetti, fanfare, and the tree breathes again
     for (let i = 0; i < 22; i++) burst(e.x + rnd(-30, 30), e.y + rnd(-30, 10), pick(["#FFD23B", "#FF8A5C", "#8CFF6B", "#7FE3FF", "#FF9CCB"]), 2);
     G.tree.hp = Math.min(G.tree.max, G.tree.hp + 30);
@@ -735,8 +826,76 @@ function killEnemy(e, bonusLabel) {
     sfx.jingleHome();
     shake(10);
   }
-  else sfx.pop();
   e.dead = true;
+}
+// Each species goes out as the thing it was made of: feathers, shell shards,
+// a puff of scales, a cloud of sand. Cheap to draw, and it reads instantly.
+const PART = (kind, x, y, o = {}) => G.parts.push(Object.assign({
+  kind, x, y, vx: rnd(-70, 70), vy: rnd(-90, 10), g: 240,
+  life: rnd(0.5, 1.1), t: 0, rot: rnd(TAU), color: "#FFFFFF",
+}, o));
+function deathEffect(e) {
+  const x = e.x, y = e.y;
+  switch (e.kind) {
+    case "bird":
+      burst(x, y, "#F7FBFF", 10);
+      for (let i = 0; i < 8; i++)
+        PART("feather", x, y, { vx: rnd(-70, 70), vy: rnd(-80, 10), g: 60,
+          life: rnd(0.9, 1.7), color: pick(["#FFFFFF", "#3B3E4A", "#FFB03B"]) });
+      sfx.squawk();
+      break;
+    case "gull":
+      burst(x, y, "#FFFFFF", 12);
+      for (let i = 0; i < 11; i++)
+        PART("feather", x, y, { vx: rnd(-90, 90), vy: rnd(-110, 0), g: 45,
+          life: rnd(1.1, 2), color: pick(["#FFFFFF", "#E8EEF2", "#C9D6DE"]) });
+      sfx.squawk();
+      break;
+    case "crab":
+      burst(x, y, "#FF6B5A", 10);
+      for (let i = 0; i < 7; i++)
+        PART("chip", x, y, { color: pick(["#E2673F", "#C4502C", "#FFD9C2"]) });
+      sfx.crabClick(); sfx.pop();
+      break;
+    case "hermit":
+      // the shell goes one way in big pieces, the crab the other
+      burst(x, y, "#C99A5B", 8);
+      for (let i = 0; i < 9; i++)
+        PART("chip", x, y, { vx: rnd(20, 150), vy: rnd(-140, -20),
+          color: pick(["#C99A5B", "#8A6534", "#E8C48A"]) });
+      for (let i = 0; i < 5; i++)
+        PART("chip", x, y, { vx: rnd(-150, -20), vy: rnd(-110, -10),
+          color: pick(["#E2673F", "#C4502C"]) });
+      sfx.crack();
+      break;
+    case "snake":
+      burst(x, y, "#7ADF56", 12);
+      for (let i = 0; i < 8; i++)
+        PART("leaf", x, y, { vx: rnd(-90, 90), vy: rnd(-70, 20), g: 120,
+          life: rnd(0.5, 1), color: pick(["#7ADF56", "#4FAF35", "#D8F76B"]) });
+      sfx.hiss();
+      break;
+    case "boar":
+      // heavy: it hits the sand and throws up a cloud
+      burst(x, y, "#B39BB4", 10);
+      PART("dust", x, y + 8, { vx: 0, vy: 0, g: 0, life: 0.7, color: "#F0D9A0" });
+      for (let i = 0; i < 6; i++)
+        PART("chip", x, y, { vx: rnd(-110, 110), vy: rnd(-150, -40),
+          color: pick(["#B39BB4", "#8C7A8E", "#5E525F"]) });
+      shake(4);
+      sfx.grunt();
+      break;
+    case "boss":
+      burst(x, y, "#FF6B5A", 26);
+      for (let i = 0; i < 14; i++)
+        PART("chip", x, y, { vx: rnd(-190, 190), vy: rnd(-230, -40), life: rnd(0.7, 1.4),
+          color: pick(["#E2673F", "#C4502C", "#FFD23B"]) });
+      PART("dust", x, y + 14, { vx: 0, vy: 0, g: 0, life: 1, color: "#F0D9A0" });
+      break;
+    default:
+      burst(x, y, "#FFFFFF", 10);
+      sfx.pop();
+  }
 }
 function updateEnemy(e, dt) {
   e.t += dt;
@@ -954,6 +1113,7 @@ function updateArrive(dt) {
     setWave(checkpoint);
     if (G.bossWave) spawnBoss();  // a checkpoint can land on a King wave
     G.bananas = bananaMax(); G.bananaRegrow = bananaRate();
+    profile.trees++; checkMedals();
     G.treeStats = { kills: 0, bestCombo: 0, scoreAt: G.score, waveAt: checkpoint, t: 0 };
     G.summary = null;
     banner("HOME SWEET HOME!", "Tree #" + (G.treesLost + 1) + " — back to Wave " + checkpoint, 2.6);
@@ -1013,6 +1173,7 @@ function throwCoconut() {
 function throwClam() {
   if (G.state !== "play" || G.paused || !G.heldClam || G.monkey.stunT > 0) return;
   G.heldClam = false;
+  profile.clams++;
   tip("clamthrow", "Clams are heavy too — aim higher than you would with a banana.", "#FF9CCB");
   const h = handPos(), a = clampAim(aimAngle()).a, sp = 520;
   G.shots.push({ kind: "clam", x: h.x, y: h.y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, g: 1200, r: 14, spin: rnd(TAU), t: 0 });
@@ -1202,6 +1363,10 @@ function update(dt) {
     G.bananaRegrow -= dt;
     if (G.bananaRegrow <= 0) { G.bananas++; G.bananaRegrow = bananaRate(); }
   } else G.bananaRegrow = bananaRate();
+  G.kingEntrance = Math.max(0, G.kingEntrance - dt);
+  G.confetti = Math.max(0, G.confetti - dt);
+  if (G.medal) { G.medal.t += dt; if (G.medal.t > G.medal.dur) G.medal = null; }
+  if (!G.medal && G.medalQueue.length) { G.medal = { m: G.medalQueue.shift(), t: 0, dur: 3.6 }; sfx.jingleHome(); }
   if (G.tip) { G.tip.t += dt; if (G.tip.t > G.tip.dur) G.tip = null; }
   updateMusicLayers(dt);
   if (G.state === "play") G.treeStats.t += dt;
@@ -1258,6 +1423,9 @@ function update(dt) {
     } else if (G.enemies.length === 0 && G.squadQueue.length === 0) {
       if (G.waveLull <= 0) {
         G.waveLull = 3;
+        profile.waves++;
+        profile.bestWave = Math.max(profile.bestWave, G.wave);
+        checkMedals();
         banner("WAVE " + G.wave + " CLEAR!", "+15 tree HP", 2);
         G.tree.hp = Math.min(G.tree.max, G.tree.hp + 15);
         const frac = G.tree.hp / G.tree.max;
@@ -1339,6 +1507,8 @@ function render() {
   drawMonkey();
   for (const sh of G.shots) drawShot(sh);
   drawParticles();
+  drawKingEntrance();
+  drawConfetti();
   drawNight();      // dusk tint sits over the world but under the aiming aids
   drawWind();
   drawTrajectory(); // an aiming aid, so it stays readable above the tint
@@ -2035,6 +2205,55 @@ function drawShot(s) {
   else if (s.kind === "clam") drawClamIcon(s.x, s.y, 1, 0.12, s.spin);
   else drawCocoIcon(s.x, s.y, 1.05, s.spin);
 }
+// The King's arrival: the beach dims from the edges and his name looms over
+// the surf while he marches in. Non-blocking — the wave is already running.
+function drawKingEntrance() {
+  if (G.kingEntrance <= 0) return;
+  const t = 1 - G.kingEntrance / 2.6;              // 0 -> 1 across the entrance
+  const fade = Math.min(1, Math.min(t * 5, (1 - t) * 4));
+  cx.save();
+  cx.globalAlpha = fade * 0.55;
+  const g = cx.createRadialGradient(W * 0.72, GROUND - 40, 60, W * 0.72, GROUND - 40, W * 0.8);
+  g.addColorStop(0, "rgba(0,0,0,0)");
+  g.addColorStop(1, "rgba(20,4,10,1)");
+  cx.fillStyle = g;
+  cx.fillRect(0, 0, W, H);
+  // a couple of heavy shock rings off the sand as he lands
+  cx.globalAlpha = fade * 0.5;
+  cx.strokeStyle = "#FFD9A8"; cx.lineWidth = 3;
+  for (let i = 0; i < 2; i++) {
+    const rt = (t * 1.6 + i * 0.5) % 1;
+    cx.globalAlpha = fade * (1 - rt) * 0.6;
+    cx.beginPath();
+    cx.ellipse(W - 120, GROUND - 6, 40 + rt * 260, 12 + rt * 60, 0, 0, TAU);
+    cx.stroke();
+  }
+  cx.restore();
+}
+// Milestone confetti — falls from the top of the screen for a couple of
+// seconds without touching the particle budget the fights use.
+const confetti = [];
+for (let i = 0; i < 70; i++)
+  confetti.push({ x: rnd(W), y: rnd(-H, 0), vx: rnd(-30, 30), vy: rnd(90, 210),
+                  w: rnd(5, 11), h: rnd(7, 14), rot: rnd(TAU), spin: rnd(-6, 6),
+                  color: pick(["#FFD23B", "#FF8A5C", "#8CFF6B", "#7FE3FF", "#FF9CCB", "#FFFFFF"]) });
+function drawConfetti() {
+  if (G.confetti <= 0) return;
+  const fade = Math.min(1, G.confetti / 0.6);
+  cx.save();
+  cx.globalAlpha = fade;
+  for (const c of confetti) {
+    c.x += c.vx * (1 / 60); c.y += c.vy * (1 / 60); c.rot += c.spin * (1 / 60);
+    if (c.y > H + 20) { c.y = -20; c.x = rnd(W); }
+    cx.save();
+    cx.translate(c.x, c.y); cx.rotate(c.rot);
+    cx.fillStyle = c.color;
+    cx.fillRect(-c.w / 2, -c.h / 2, c.w, c.h);
+    cx.restore();
+  }
+  cx.restore();
+}
+
 // Dusk tint for NIGHTFALL waves — fades in and out with G.night so the
 // transition never snaps.
 const stars = [];
@@ -2309,6 +2528,26 @@ function drawHUD() {
     cx.restore();
   }
 
+  // medal unlock — sits above the coaching toast so the two never collide
+  if (G.medal) {
+    const md = G.medal, inT = clamp(md.t / 0.3, 0, 1), outT = clamp((md.dur - md.t) / 0.5, 0, 1);
+    cx.save();
+    cx.globalAlpha = Math.min(inT, outT);
+    const label = "MEDAL EARNED — " + md.m.name;
+    cx.font = 'bold 17px "Trebuchet MS", Verdana, sans-serif';
+    const tw = Math.max(cx.measureText(label).width, md.m.perk ? cx.measureText(md.m.perk).width : 0);
+    const pw = tw + 84, px = W / 2 - pw / 2, py = 76 - (1 - inT) * 14;
+    const ph = md.m.perk ? 62 : 46;
+    cx.fillStyle = "rgba(24,18,4,0.92)";
+    roundRect(px, py, pw, ph, 14); cx.fill();
+    cx.strokeStyle = "#FFD23B"; cx.lineWidth = 2;
+    roundRect(px, py, pw, ph, 14); cx.stroke();
+    drawMedalIcon(px + 34, py + ph / 2, 1, true);
+    txt(label, px + 60, py + (md.m.perk ? 21 : ph / 2), 17, "#FFD23B", "left", false);
+    if (md.m.perk) txt(md.m.perk, px + 60, py + 43, 14, "#C9FFB8", "left", false);
+    cx.restore();
+  }
+
   // one-time coaching toast, low enough to stay clear of the wave banner
   if (G.tip) {
     const t = G.tip, inT = clamp(t.t / 0.28, 0, 1), outT = clamp((t.dur - t.t) / 0.5, 0, 1);
@@ -2530,7 +2769,17 @@ function drawTitle() {
   cx.fillStyle = "rgba(10,45,60,0.55)";
   roundRect(m.x, m.cy - 24, m.w, lines.length * m.lh + 28, 16); cx.fill();
   lines.forEach(([text, col], i) => txt(text, m.x + m.padX, m.cy + i * m.lh, 16, col, "left"));
-  if (G.hi > 0) txt("BEST SCORE  " + G.hi, W / 2 - 150, 300, 18, "#FFE9A8", "center");
+  // what the game remembers about you, right where a returning player looks
+  if (profile.runs > 0) {
+    txt("Best wave " + profile.bestWave + "   ·   Best score " + Math.max(G.hi, profile.bestScore) +
+        "   ·   " + profile.runs + (profile.runs === 1 ? " run" : " runs"),
+        W / 2, 214, 16, "#FFE9A8", "center");
+    const earned = MEDALS.filter(m => hasMedal(m.id)).length;
+    const shelfY = 244, gap = 26, sx = W / 2 - (MEDALS.length - 1) * gap / 2;
+    MEDALS.forEach((m, i) => drawMedalIcon(sx + i * gap, shelfY, 0.62, hasMedal(m.id)));
+    txt(earned + " / " + MEDALS.length + " medals" + (earned < MEDALS.length ? "  ·  P → Medals to see the rest" : "  ·  all of them!"),
+        W / 2, shelfY + 26, 13, "#C9FFB8", "center", false);
+  }
 }
 // -------------------------- Run summary ---------------------------
 // The game never ends, so losing a tree is the only natural punctuation.
@@ -2573,6 +2822,53 @@ function drawSummary() {
   cx.restore();
 }
 
+// A little scallop-shell medal on a ribbon.
+function drawMedalIcon(x, y, sc = 1, earned = true) {
+  cx.save();
+  cx.translate(x, y); cx.scale(sc, sc);
+  cx.fillStyle = earned ? "#E2673F" : "rgba(255,255,255,0.16)";
+  cx.beginPath(); cx.moveTo(-8, -14); cx.lineTo(-3, -2); cx.lineTo(-13, -4); cx.closePath(); cx.fill();
+  cx.beginPath(); cx.moveTo(8, -14); cx.lineTo(3, -2); cx.lineTo(13, -4); cx.closePath(); cx.fill();
+  cx.fillStyle = earned ? "#FFD23B" : "rgba(255,255,255,0.22)";
+  cx.beginPath(); cx.arc(0, 4, 11, 0, TAU); cx.fill();
+  cx.strokeStyle = earned ? "#C99A1C" : "rgba(255,255,255,0.28)";
+  cx.lineWidth = 1.6;
+  cx.beginPath();
+  for (let i = 0; i < 5; i++) {
+    const a = -Math.PI / 2 + (i - 2) * 0.42;
+    cx.moveTo(0, 10); cx.lineTo(Math.cos(a) * 9, 4 + Math.sin(a) * 9);
+  }
+  cx.stroke();
+  cx.restore();
+}
+function drawMedalsPage() {
+  txt("MEDALS", W / 2, 56, 38, "#FFFFFF", "center");
+  txt(medalCount() + " of " + MEDALS.length + " earned", W / 2, 86, 15, "#D8F7FF", "center", false);
+  const colW = 440, rowH = 40, cols = 2;
+  const gridW = colW * cols, gx = W / 2 - gridW / 2, gy = 108;
+  MEDALS.forEach((m, i) => {
+    const cxi = i % cols, ryi = (i / cols) | 0;
+    const x = gx + cxi * colW, y = gy + ryi * rowH;
+    const got = hasMedal(m.id);
+    drawMedalIcon(x + 22, y + 18, 0.82, got);
+    txt(m.name, x + 44, y + 11, 15, got ? "#FFD23B" : "#8FA6AE", "left", false);
+    txt(got && m.perk ? m.perk : m.desc, x + 44, y + 28, 12,
+        got ? (m.perk ? "#C9FFB8" : "#9FC4CE") : "#7C929A", "left", false);
+  });
+  const sy = gy + Math.ceil(MEDALS.length / cols) * rowH + 16;
+  txt("Lifetime  ·  " + profile.runs + " runs  ·  best wave " + profile.bestWave +
+      "  ·  best score " + profile.bestScore, W / 2, sy, 14, "#D8F7FF", "center", false);
+  txt(profile.kills + " knockouts  ·  " + profile.kings + " Kings felled  ·  " +
+      profile.trees + " trees planted  ·  " + profile.clams + " clams thrown",
+      W / 2, sy + 20, 14, "#9FC4CE", "center", false);
+
+  const b = backBtnRect(), hot = pauseMenu.hover === 0;
+  cx.fillStyle = hot ? "rgba(255,255,255,0.96)" : "rgba(255,255,255,0.86)";
+  roundRect(b.x, b.y, b.w, b.h, 12); cx.fill();
+  if (hot) { cx.strokeStyle = "#FFD23B"; cx.lineWidth = 3; roundRect(b.x, b.y, b.w, b.h, 12); cx.stroke(); }
+  txt("Back", b.x + b.w / 2, b.y + b.h / 2, 18, "#123A44", "center", false);
+}
+
 // --------------------------- Pause menu ---------------------------
 const pauseMenu = { hover: -1, page: "menu" };
 const PAUSE_ROW = { w: 320, h: 42, gap: 9, top: 182 };
@@ -2581,6 +2877,7 @@ function pauseRows() {
   return [
     { label: "Resume", value: null, act: () => togglePause() },
     { label: "Controls", value: null, act: () => { pauseMenu.page = "controls"; pauseMenu.hover = -1; } },
+    { label: "Medals", value: null, act: () => { pauseMenu.page = "medals"; pauseMenu.hover = -1; } },
     { label: "Sound", value: !muted, act: () => toggleMute() },
     { label: "Screen shake", value: opts.shake, act: () => setOpt("shake", !opts.shake) },
     { label: "Aim preview", value: opts.preview, act: () => setOpt("preview", !opts.preview) },
@@ -2612,7 +2909,7 @@ function controlRows() {
 const BACK_BTN = { w: 150, h: 40 };
 function backBtnRect() { return { x: W / 2 - BACK_BTN.w / 2, y: H - 72, w: BACK_BTN.w, h: BACK_BTN.h }; }
 function pauseRowAt(x, y) {
-  if (pauseMenu.page === "controls") {
+  if (pauseMenu.page !== "menu") {
     const b = backBtnRect();
     return (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) ? 0 : -1;
   }
@@ -2626,7 +2923,7 @@ function pauseRowAt(x, y) {
 function pauseHit(x, y) {
   const i = pauseRowAt(x, y);
   if (i < 0) return;      // clicking off the menu no longer resumes by accident
-  if (pauseMenu.page === "controls") { pauseMenu.page = "menu"; sfx.pop(); return; }
+  if (pauseMenu.page !== "menu") { pauseMenu.page = "menu"; sfx.pop(); return; }
   pauseRows()[i].act();
   sfx.pop();
 }
@@ -2660,6 +2957,7 @@ function drawPaused() {
   cx.fillStyle = "rgba(8,30,45,0.82)";
   cx.fillRect(0, 0, W, H);
   if (pauseMenu.page === "controls") { drawControlsPage(); return; }
+  if (pauseMenu.page === "medals") { drawMedalsPage(); return; }
   txt("PAUSED", W / 2, 132, 46, "#FFFFFF", "center");
 
   const rows = pauseRows();
