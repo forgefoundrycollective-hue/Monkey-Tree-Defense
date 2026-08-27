@@ -97,6 +97,44 @@ export default async function run() {
     rec.check("robbing an empty stash can't go negative",
       emptyRob.bananas === 0 && emptyRob.loot === 0 && emptyRob.fleeing, JSON.stringify(emptyRob));
 
+    // --- Late-game scaling: the ceiling keeps rising ---
+    const scaling = await page.evaluate(() => {
+      const G = window.__mtd.G, M = window.__mtd;
+      const at = w => { M.setWave(w); return M.scaling(); };
+      const hpAt = w => {
+        M.setWave(w);
+        G.enemies.length = 0;
+        M.spawnEnemy("crab");
+        return G.enemies[0].maxhp;
+      };
+      const out = {
+        early: at(6), mid: at(20), late: at(40),
+        crab6: hpAt(6), crab20: hpAt(20), crab40: hpAt(40),
+      };
+      // how many Kings actually turn up on a late boss wave
+      M.setWave(55);
+      G.enemies.length = 0;
+      for (let i = 0; i < out.late.bossCount; i++) M.spawnBoss(i);
+      out.kingsSpawned = G.enemies.filter(e => e.kind === "boss").length;
+      out.kingHp = G.enemies[0] ? G.enemies[0].maxhp : null;
+      G.enemies.length = 0;
+      M.setWave(1);
+      return out;
+    });
+    rec.check("enemies stay at base HP through the early game",
+      scaling.early.hpBonus === 0 && scaling.crab6 === 2, JSON.stringify(scaling.early));
+    rec.check("enemies toughen up past the midgame",
+      scaling.crab20 > scaling.crab6 && scaling.crab40 > scaling.crab20,
+      JSON.stringify({ c6: scaling.crab6, c20: scaling.crab20, c40: scaling.crab40 }));
+    rec.check("each King is tougher than the last",
+      scaling.early.bossHp === 25 && scaling.mid.bossHp > scaling.early.bossHp &&
+      scaling.late.bossHp > scaling.mid.bossHp,
+      JSON.stringify({ w6: scaling.early.bossHp, w20: scaling.mid.bossHp, w40: scaling.late.bossHp }));
+    rec.check("deep waves bring more than one King",
+      scaling.early.bossCount === 1 && scaling.late.bossCount > 1 &&
+      scaling.kingsSpawned === scaling.late.bossCount,
+      JSON.stringify({ early: scaling.early.bossCount, late: scaling.late.bossCount, spawned: scaling.kingsSpawned }));
+
     // --- Wave modifiers ---
     const mods = await page.evaluate(() => {
       const G = window.__mtd.G;

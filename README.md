@@ -47,6 +47,8 @@ automatically on touch devices.
   feel the tension climb. From wave 4 they arrive in squads; from wave 6 birds
   **dive-bomb**; every 5th wave **King Pincher** (a crab of unreasonable size)
   comes for your trunk — fell him for a big tree heal.
+- Past wave 12 everything on the beach slowly toughens up, and each King is
+  bigger than the last — deep enough in, more than one shows up at once.
 - Wave 8 brings **hermit crabs**, whose shells make bananas clank off — bring a
   coconut or the stick. Wave 9 brings **gulls**, which ignore the tree entirely
   and rob your banana stash; shoot one down before it escapes and you get your
@@ -106,7 +108,37 @@ Playwright is resolved from a local install, a global one, or
 | `progression` | Checkpoint restarts, per-wave state resets, squads and dive-bombs |
 | `ammo` | Banana stash caps, dry-throw handling, regrow pacing, refills |
 | `upgrades` | Draft cadence, each upgrade's effect, stack caps, run resets |
-| `lategame` | Wave-8+ unlocks, hermit armor, gull theft and recovery, wave modifiers |
+| `lategame` | Wave-8+ unlocks, hermit armor, gull theft and recovery, wave modifiers, late-game scaling |
 | `controls` | Mouse vs touch throwing, drag-to-aim, pause menu, options and their persistence |
 | `tips` | First-encounter coaching fires once, expires, and resets per run |
 | `audio` | Music layering: the King's ostinato, the night filter, and tempo staying locked across layers |
+
+## Measuring balance
+
+Balance claims are easy to guess at and easy to get wrong, so there's a bot
+that plays the game headlessly and reports what actually happens:
+
+```sh
+node tools/balance.mjs                   # 30 runs
+node tools/balance.mjs --runs 20 --seconds 1500
+node tools/balance.mjs --no-upgrades     # how the game plays with no upgrades
+node tools/balance.mjs --skill 0.6       # 0..1, how well the bot aims
+```
+
+It drives the real game through the same `window.__mtd` seam the tests use,
+with a deliberately mediocre policy, and prints a histogram of furthest wave
+reached, trees lost, and which upgrades got taken.
+
+Latest measurement (20 runs, 1500 simulated seconds, skill 0.8):
+
+| | median wave | trees lost |
+| --- | --- | --- |
+| with upgrades | 33 | 3.1 |
+| without upgrades | 16 | 5.6 |
+
+The first run of this bot found the curve going flat: with upgrades the
+median run reached wave 56 and lost only 1.4 trees, because spawn counts,
+spawn interval and every enemy speed were capped while upgrades kept
+compounding. Enemies now gain HP past wave 12, each King is tougher than
+the last (and deep waves bring more than one), and the spawn caps were
+lifted — which brought the median to 33 with no run finishing untouched.
