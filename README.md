@@ -144,6 +144,18 @@ Latest measurement (20 runs, 1500 simulated seconds, skill 0.8):
 | with upgrades | 33 | 3.1 |
 | without upgrades | 16 | 5.6 |
 
+Across bot skill levels (14 runs, 1200s each) the curve stays reasonable at
+both ends rather than only working for average play:
+
+| bot skill | median wave | trees lost |
+| --- | --- | --- |
+| 0.5 (sloppy aim) | 26 | 2.5 |
+| 0.8 | 33 | 3.1 |
+| 1.0 (perfect aim) | 30 | 2.1 |
+
+Aim accuracy is worth only a few waves — survival depends far more on climbing
+to meet threats and on which upgrades you take than on precision.
+
 The first run of this bot found the curve going flat: with upgrades the
 median run reached wave 56 and lost only 1.4 trees, because spawn counts,
 spawn interval and every enemy speed were capped while upgrades kept
