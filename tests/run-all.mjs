@@ -14,8 +14,9 @@ import tips from "./tips.test.mjs";
 import audio from "./audio.test.mjs";
 import profile from "./profile.test.mjs";
 import presentation from "./presentation.test.mjs";
+import stuck from "./stuck.test.mjs";
 
-const SUITES = { mechanics, progression, ammo, upgrades, lategame, controls, tips, audio, profile, presentation };
+const SUITES = { mechanics, progression, ammo, upgrades, lategame, controls, tips, audio, profile, presentation, stuck };
 
 const filter = process.argv[2];
 const chosen = Object.entries(SUITES).filter(([name]) => !filter || name.includes(filter));

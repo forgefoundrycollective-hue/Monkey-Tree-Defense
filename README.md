@@ -137,6 +137,7 @@ Playwright is resolved from a local install, a global one, or
 | `audio` | Music layering: the King's ostinato, the night filter, and tempo staying locked across layers |
 | `profile` | Lifetime tallies, medal unlocks and their perks, persistence across reloads |
 | `presentation` | Per-species death debris, the King's entrance, milestone flourishes |
+| `stuck` | The monkey can always climb: focus loss, jammed keys and stuck buttons never trap it |
 
 ## Measuring balance
 

@@ -134,6 +134,7 @@ function mulberry32(seed) {
 const keys = {};
 const mouse = { x: W * 0.7, y: H * 0.4, lmb: false };
 let touchMode = false;
+let climbPref = -1;   // which climb direction was asked for most recently
 // a finger held down on the canvas is aiming, not throwing (see pointerup)
 const touchAim = { active: false, id: -1, moved: false };
 
@@ -143,6 +144,12 @@ function toLogical(cxs, cys) {
 
 addEventListener("keydown", e => {
   if (["Space","ArrowUp","ArrowDown","ArrowLeft","ArrowRight"].includes(e.code)) e.preventDefault();
+  if (!keys[e.code]) {
+    // remember which way was asked for most recently, so up-and-down
+    // together resolves instead of cancelling to a standstill
+    if (e.code === "KeyW" || e.code === "ArrowUp") climbPref = -1;
+    if (e.code === "KeyS" || e.code === "ArrowDown") climbPref = 1;
+  }
   keys[e.code] = true;
   audioInit();
   if (G.state === "title" && (e.code === "Space" || e.code === "Enter")) startGame();
@@ -155,6 +162,23 @@ addEventListener("keydown", e => {
   if (G.state === "draft" && /^Digit[123]$/.test(e.code)) takeUpgrade(+e.code.slice(5) - 1);
 });
 addEventListener("keyup", e => { keys[e.code] = false; });
+
+// A key held down when the page loses focus never receives its keyup, so it
+// stays "pressed" forever. Climbing reads up and down together, so one stuck
+// direction cancels the other and the monkey can't move at all — which looks
+// exactly like being wedged against the sand. Drop every held input whenever
+// focus or visibility goes away.
+function releaseAllInputs() {
+  for (const k of Object.keys(keys)) keys[k] = false;
+  mouse.lmb = false;
+  touchAim.active = false;
+  for (const b of Object.values(touchBtns)) b.held = false;
+}
+addEventListener("blur", releaseAllInputs);
+addEventListener("pagehide", releaseAllInputs);
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) releaseAllInputs();
+});
 
 cv.addEventListener("contextmenu", e => e.preventDefault());
 cv.addEventListener("pointermove", e => {
@@ -525,6 +549,12 @@ window.__mtd = {
   perks: () => ({ bananas: perkBananas(), treeHp: perkTreeHp(), clam: perkClam() }),
   checkMedals: () => checkMedals(),
   fx: () => ({ kingEntrance: G.kingEntrance, confetti: G.confetti, parts: G.parts.length }),
+  input: () => ({
+    keys: Object.keys(keys).filter(k => keys[k]),
+    lmb: mouse.lmb, aiming: touchAim.active,
+    held: Object.fromEntries(Object.entries(touchBtns).map(([k, b]) => [k, !!b.held])),
+    climbPref,
+  }),
   titleFit: () => {
     const lines = titleLines(), m = titlePanelMetrics(lines);
     cx.font = 'bold 16px "Trebuchet MS", Verdana, sans-serif';
@@ -1388,9 +1418,11 @@ function update(dt) {
   if (G.state === "play") {
     G.playT += dt;
     // climbing (not while seeing stars)
-    let dy = 0;
-    if (keys.KeyW || keys.ArrowUp || touchBtns.up.held) dy -= 1;
-    if (keys.KeyS || keys.ArrowDown || touchBtns.down.held) dy += 1;
+    const wantUp = keys.KeyW || keys.ArrowUp || touchBtns.up.held;
+    const wantDown = keys.KeyS || keys.ArrowDown || touchBtns.down.held;
+    // both at once means the most recent request wins rather than the two
+    // cancelling out — a stuck input can slow you down but never trap you
+    let dy = wantUp && wantDown ? climbPref : wantUp ? -1 : wantDown ? 1 : 0;
     if (dy !== 0 && m.stunT <= 0) {
       m.y = clamp(m.y + dy * 240 * dt, CLIMB_MIN, CLIMB_MAX);
       m.cycle += dt * 10;
