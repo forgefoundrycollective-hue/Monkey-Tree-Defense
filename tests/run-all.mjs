@@ -7,11 +7,11 @@
 import mechanics from "./mechanics.test.mjs";
 import progression from "./progression.test.mjs";
 import ammo from "./ammo.test.mjs";
-import boons from "./boons.test.mjs";
+import upgrades from "./upgrades.test.mjs";
 import lategame from "./lategame.test.mjs";
 import controls from "./controls.test.mjs";
 
-const SUITES = { mechanics, progression, ammo, boons, lategame, controls };
+const SUITES = { mechanics, progression, ammo, upgrades, lategame, controls };
 
 const filter = process.argv[2];
 const chosen = Object.entries(SUITES).filter(([name]) => !filter || name.includes(filter));

@@ -1,4 +1,4 @@
-// Boon drafting: when it triggers, and that each boon actually bends its rule.
+// Upgrade drafting: when it triggers, and that each upgrade actually bends its rule.
 import { loadChromium, createRecorder, openGame, quiesce, step, until, placeEnemy } from "./harness.mjs";
 
 // Clears the board so the wave-clear path fires, and runs until the draft opens.
@@ -18,7 +18,7 @@ async function clearWaveAt(page, wave) {
 }
 
 export default async function run() {
-  const rec = createRecorder("boons");
+  const rec = createRecorder("upgrades");
   const chromium = await loadChromium();
   const browser = await chromium.launch();
   try {
@@ -33,7 +33,7 @@ export default async function run() {
       w2.state === "play" && !w2.picks && w2.wave === 3, JSON.stringify(w2));
 
     const w3 = await clearWaveAt(page, 3);
-    rec.check("clearing wave 3 opens a draft of three distinct boons",
+    rec.check("clearing wave 3 opens a draft of three distinct upgrades",
       w3.state === "draft" && w3.picks && w3.picks.length === 3 &&
       new Set(w3.picks).size === 3, JSON.stringify(w3));
 
@@ -41,10 +41,10 @@ export default async function run() {
     const picked = await page.evaluate(() => {
       const G = window.__mtd.G;
       const id = G.draft.picks[0].id;
-      window.__mtd.takeBoon(0);
-      return { id, state: G.state, wave: G.wave, level: G.boons[id], draft: G.draft };
+      window.__mtd.takeUpgrade(0);
+      return { id, state: G.state, wave: G.wave, level: G.upgrades[id], draft: G.draft };
     });
-    rec.check("taking a boon banks it and starts the next wave",
+    rec.check("taking an upgrade banks it and starts the next wave",
       picked.state === "play" && picked.wave === 4 &&
       picked.level === 1 && picked.draft === null, JSON.stringify(picked));
 
@@ -53,18 +53,18 @@ export default async function run() {
     const w5 = await clearWaveAt(page, 5);
     rec.check("clearing a King wave also opens a draft",
       w5.state === "draft", JSON.stringify(w5));
-    await page.evaluate(() => window.__mtd.takeBoon(0));
+    await page.evaluate(() => window.__mtd.takeUpgrade(0));
 
-    // --- Each boon bends its rule. Grant directly and measure the effect. ---
+    // --- Each upgrade bends its rule. Grant directly and measure the effect. ---
     const effects = await page.evaluate(k => {
       const G = window.__mtd.G, M = window.__mtd;
       const out = {};
-      const reset = () => { G.boons = {}; G.tree.max = 100; G.tree.hp = 100; };
+      const reset = () => { G.upgrades = {}; G.tree.max = 100; G.tree.hp = 100; };
 
       // Bigger Bunch: stash cap grows
       reset();
       const baseCap = (() => { G.bananas = 999; M.step(0); return G.bananas; })();
-      reset(); G.boons.bunch = 2; G.bananas = 0;
+      reset(); G.upgrades.bunch = 2; G.bananas = 0;
       for (let i = 0; i < 60 * 60; i++) M.step(1 / 60);   // plenty of regrow time
       out.bunch = { base: k.BANANA_MAX, boosted: G.bananas };
 
@@ -72,7 +72,7 @@ export default async function run() {
       reset(); G.bananas = 0; G.bananaRegrow = k.BANANA_REGROW;
       for (let i = 0; i < Math.round(k.BANANA_REGROW * 60); i++) M.step(1 / 60);
       const plain = G.bananas;
-      reset(); G.boons.ripen = 3; G.bananas = 0; G.bananaRegrow = 0.0001;
+      reset(); G.upgrades.ripen = 3; G.bananas = 0; G.bananaRegrow = 0.0001;
       for (let i = 0; i < Math.round(k.BANANA_REGROW * 60); i++) M.step(1 / 60);
       out.ripen = { plain, fast: G.bananas };
 
@@ -86,7 +86,7 @@ export default async function run() {
         return G.enemies[0] ? 6 - G.enemies[0].hp : 6;
       };
       reset(); const plainHit = hitWithBanana();
-      reset(); G.boons.ripe = 2; const heavyHit = hitWithBanana();
+      reset(); G.upgrades.ripe = 2; const heavyHit = hitWithBanana();
       out.ripe = { plainHit, heavyHit };
 
       // Longer Stick: reaches further from the trunk
@@ -100,7 +100,7 @@ export default async function run() {
         return G.enemies[0].hp < 99;
       };
       reset(); const shortReach = bonkAt(100);
-      reset(); G.boons.stick = 3; const longReach = bonkAt(100);
+      reset(); G.upgrades.stick = 3; const longReach = bonkAt(100);
       out.stick = { shortReach, longReach };
 
       // Limber Shoulder: the aim cone opens downward
@@ -113,14 +113,14 @@ export default async function run() {
         return s ? Math.atan2(s.vy - s.g * s.t, s.vx) * 180 / Math.PI : null;
       };
       reset(); const tightAim = launchAngle();
-      reset(); G.boons.limber = 2; const limberAim = launchAngle();
+      reset(); G.upgrades.limber = 2; const limberAim = launchAngle();
       out.limber = { tightAim, limberAim };
 
       // Iron Bark: raises and refills max tree HP
       reset(); G.tree.hp = 40;
       G.draft = { picks: [{ id: "bark", name: "Iron Bark", tint: "#6BBF59" }], t: 0, hover: -1 };
       G.state = "draft";
-      M.takeBoon(0);
+      M.takeUpgrade(0);
       out.bark = { max: G.tree.max, hp: G.tree.hp, state: G.state };
 
       reset();
@@ -140,36 +140,36 @@ export default async function run() {
     rec.check("Iron Bark raises max tree HP and heals to it",
       effects.bark.max === 125 && effects.bark.hp === 125, JSON.stringify(effects.bark));
 
-    // --- A boon can't be stacked past its cap ---
+    // --- An upgrade can't be stacked past its cap ---
     const capped = await page.evaluate(() => {
       const G = window.__mtd.G;
-      G.boons = {};
-      const b = window.__mtd.boonMax("ripe");
-      G.boons.ripe = b;
-      // a draft should never offer a maxed boon
+      G.upgrades = {};
+      const b = window.__mtd.upgradeMax("ripe");
+      G.upgrades.ripe = b;
+      // a draft should never offer a maxed upgrade
       let offeredMaxed = false;
       for (let i = 0; i < 40; i++) {
         G.draft = null; G.state = "play";
         window.__mtd.openDraft();
         if (G.draft && G.draft.picks.some(p => p.id === "ripe")) offeredMaxed = true;
       }
-      G.draft = null; G.state = "play"; G.boons = {};
+      G.draft = null; G.state = "play"; G.upgrades = {};
       return { cap: b, offeredMaxed };
     });
-    rec.check("a maxed boon stops being offered",
+    rec.check("a maxed upgrade stops being offered",
       !capped.offeredMaxed, JSON.stringify(capped));
 
-    // --- A fresh run wipes boons ---
+    // --- A fresh run wipes upgrades ---
     const fresh = await page.evaluate(() => {
       const G = window.__mtd.G;
-      G.boons = { bark: 2, bunch: 1 };
+      G.upgrades = { bark: 2, bunch: 1 };
       G.tree.max = 150;
       G.state = "title";
       window.__mtd.start();
-      return { boons: Object.keys(G.boons).length, treeMax: G.tree.max, bananas: G.bananas };
+      return { upgrades: Object.keys(G.upgrades).length, treeMax: G.tree.max, bananas: G.bananas };
     });
-    rec.check("starting a new run clears boons and tree upgrades",
-      fresh.boons === 0 && fresh.treeMax === 100 && fresh.bananas === K.BANANA_MAX,
+    rec.check("starting a new run clears upgrades and tree upgrades",
+      fresh.upgrades === 0 && fresh.treeMax === 100 && fresh.bananas === K.BANANA_MAX,
       JSON.stringify(fresh));
   } finally {
     await browser.close();

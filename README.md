@@ -55,8 +55,8 @@ automatically on touch devices.
   (the aim preview bends with it), `NIGHTFALL` drops the sun for a moonlit
   fight, and `SWARM` sends far more of them, far faster.
 - Chain kills within 2 seconds for a **combo multiplier**.
-- Every third wave (and after each King) you **draft a boon** — one of three
-  upgrades that bend a rule you already know: a bigger banana bunch, faster
+- Every third wave (and after each King) you **pick an upgrade** — one of three
+  cards, each bending a rule you already know: a bigger banana bunch, faster
   regrowth, heavier bananas, a longer stick, wider coconut blasts, a limber
   shoulder that lets you throw steeply downward, tougher bark, or luckier
   clams. They stack, and they last for the run.
@@ -98,6 +98,6 @@ Playwright is resolved from a local install, a global one, or
 | `mechanics` | Aim cone clamping, stick reach, the pinch/stun/shove exchange, clam banishing, King Pincher |
 | `progression` | Checkpoint restarts, per-wave state resets, squads and dive-bombs |
 | `ammo` | Banana stash caps, dry-throw handling, regrow pacing, refills |
-| `boons` | Draft cadence, each boon's effect, stack caps, run resets |
+| `upgrades` | Draft cadence, each upgrade's effect, stack caps, run resets |
 | `lategame` | Wave-8+ unlocks, hermit armor, gull theft and recovery, wave modifiers |
 | `controls` | Mouse vs touch throwing, drag-to-aim, pause menu, options and their persistence |

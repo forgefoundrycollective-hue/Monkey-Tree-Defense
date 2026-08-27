@@ -92,7 +92,7 @@ addEventListener("keydown", e => {
   if (e.code === "Space") throwBanana();
   if (e.code === "KeyF") swing();
   if (e.code === "KeyQ") throwClam();
-  if (G.state === "draft" && /^Digit[123]$/.test(e.code)) takeBoon(+e.code.slice(5) - 1);
+  if (G.state === "draft" && /^Digit[123]$/.test(e.code)) takeUpgrade(+e.code.slice(5) - 1);
 });
 addEventListener("keyup", e => { keys[e.code] = false; });
 
@@ -323,7 +323,7 @@ const G = {
   clam: null, heldClam: false, bannedKind: null,
   squadQueue: [], bossWave: false, heartT: 0,
   bananas: BANANA_MAX, bananaRegrow: 0, bananaFlash: 0,
-  boons: {}, draft: null,
+  upgrades: {}, draft: null,
   modifier: null, wind: 0, night: 0,
   frozen: false,   // tests drive the clock themselves; see window.__mtd.freeze
   banner: { text: "", sub: "", t: 0, dur: 0 },
@@ -358,8 +358,8 @@ window.__mtd = {
   spawnBoss: () => spawnBoss(),
   aim: (x, y) => { mouse.x = x; mouse.y = y; },
   openDraft: () => openDraft(),
-  takeBoon: i => takeBoon(i),
-  boonMax: id => boonById[id].max,
+  takeUpgrade: i => takeUpgrade(i),
+  upgradeMax: id => upgradeById[id].max,
   opts, setOpt: (k, v) => setOpt(k, v),
   touch: () => ({ mode: touchMode, aiming: touchAim.active }),
   touchButtonHit: (x, y, press) => { touchMode = true; return touchButtonHit(x, y, press); },
@@ -368,11 +368,11 @@ window.__mtd = {
   pauseRowAt: (x, y) => pauseRowAt(x, y),
 };
 
-// --------------------------- Boons -------------------------------
+// --------------------------- Upgrades -------------------------------
 // Every third wave (and after each King) the monkey picks one of three
 // upgrades. Each one bends a rule the player already understands, so the
 // choice is about how you want to fight, not about a bigger number.
-const BOONS = [
+const UPGRADES = [
   { id: "bunch",  max: 3, short: "Bunch",    name: "Bigger Bunch",    desc: "+3 bananas in the stash",        tint: "#FFD23B" },
   { id: "ripen",  max: 3, short: "Ripening", name: "Fast Ripening",   desc: "the bunch regrows much quicker",  tint: "#8CFF6B" },
   { id: "ripe",   max: 2, short: "Heavy",    name: "Heavy Bananas",   desc: "+1 damage per banana",            tint: "#FFB03B" },
@@ -382,9 +382,9 @@ const BOONS = [
   { id: "bark",   max: 4, short: "Bark",     name: "Iron Bark",       desc: "+25 max tree HP, healed now",     tint: "#6BBF59" },
   { id: "pearl",  max: 2, short: "Pearl",    name: "Pearl Diver",     desc: "clams wash up far more often",    tint: "#FF9CCB" },
 ];
-const boonById = Object.fromEntries(BOONS.map(b => [b.id, b]));
-const lv = id => G.boons[id] || 0;
-// Derived stats — every hardcoded value a boon can touch reads through these.
+const upgradeById = Object.fromEntries(UPGRADES.map(b => [b.id, b]));
+const lv = id => G.upgrades[id] || 0;
+// Derived stats — every hardcoded value an upgrade can touch reads through these.
 const bananaMax    = () => BANANA_MAX + lv("bunch") * 3;
 const bananaRate   = () => BANANA_REGROW * Math.pow(0.68, lv("ripen"));
 const bananaDamage = () => 1 + lv("ripe");
@@ -398,7 +398,7 @@ const ROMAN = ["", "I", "II", "III", "IV"];
 
 function shouldDraft(wave) { return wave % 3 === 0 || wave % 5 === 0; }
 function openDraft() {
-  const pool = BOONS.filter(b => lv(b.id) < b.max);
+  const pool = UPGRADES.filter(b => lv(b.id) < b.max);
   if (!pool.length) { startWave(G.wave + 1); return; }
   const picks = [];
   const bag = pool.slice();
@@ -408,11 +408,11 @@ function openDraft() {
   G.banner = { text: "", sub: "", t: 0, dur: 0 };  // don't read through the overlay
   sfx.jingleWave();
 }
-function takeBoon(i) {
+function takeUpgrade(i) {
   if (G.state !== "draft" || !G.draft) return;
   const b = G.draft.picks[i];
   if (!b) return;
-  G.boons[b.id] = lv(b.id) + 1;
+  G.upgrades[b.id] = lv(b.id) + 1;
   if (b.id === "bark") {
     G.tree.max += 25;
     G.tree.hp = G.tree.max;
@@ -457,7 +457,7 @@ function startGame() {
   if (G.state !== "title") return;
   audioInit();
   G.state = "play"; G.playT = 0; G.score = 0; G.treesLost = 0;
-  G.boons = {}; G.draft = null;
+  G.upgrades = {}; G.draft = null;
   G.tree.max = 100; G.bananas = BANANA_MAX; G.bananaRegrow = BANANA_REGROW;
   G.tree.hp = G.tree.max; G.tree.stage = 0;
   G.enemies.length = 0; G.shots.length = 0;
@@ -1158,13 +1158,13 @@ function render() {
   else if (G.state === "falling") drawTree(TREE_X, G.tree.fallAngle, G.tree.stage, G.tree.seed);
   else drawTree(TREE_X, 0, G.tree.stage, G.tree.seed);
 
-  drawTrajectory();
   for (const e of G.enemies) drawEnemy(e);
   drawMonkey();
   for (const sh of G.shots) drawShot(sh);
   drawParticles();
-  drawNight();      // dusk tint sits over the world but under floats and HUD
+  drawNight();      // dusk tint sits over the world but under the aiming aids
   drawWind();
+  drawTrajectory(); // an aiming aid, so it stays readable above the tint
   drawFloats();
   drawHUD();
 
@@ -1900,6 +1900,13 @@ function drawWind() {
   cx.restore();
 }
 
+// Blend two hex colours, so the aim dots cross-fade with the night tint
+// instead of snapping when a NIGHTFALL wave rolls in.
+function mixHex(a, b, t) {
+  const pa = parseInt(a.slice(1), 16), pb = parseInt(b.slice(1), 16);
+  const ch = sh => Math.round(((pa >> sh) & 255) + ((((pb >> sh) & 255) - ((pa >> sh) & 255)) * t));
+  return `rgb(${ch(16)},${ch(8)},${ch(0)})`;
+}
 function drawTrajectory() {
   if (G.state !== "play" || G.paused || !opts.preview) return;
   if (touchMode && !touchAim.active) return;   // only while a finger is aiming
@@ -1908,14 +1915,26 @@ function drawTrajectory() {
   const coco = G.cocoCd <= 0 && (keys.KeyE || keys.ShiftLeft);
   const sp = coco ? 500 : 640, g = coco ? 1500 : 1050;
   let x = h.x, y = h.y, vx = Math.cos(a) * sp, vy = Math.sin(a) * sp;
-  // red dots = the aim is outside the throw cone and has been clamped
-  cx.fillStyle = aim.clamped ? "rgba(255,90,80,0.55)"
-    : coco ? "rgba(120,72,32,0.5)" : "rgba(255,210,59,0.55)";
+  // The arc crosses bright sky, dark trunk, sea and sand, so each dot is a
+  // solid ink dot inside a contrasting rim — readable over any of them.
+  // Ink goes dark on a bright beach and pale under a night sky; red always
+  // means the aim hit the edge of the throw cone and was clamped.
+  const n = G.night;
+  const ink = aim.clamped ? mixHex("#B3170B", "#FF9081", n)
+    : coco ? mixHex("#3A1E06", "#FFD9A0", n)
+           : mixHex("#123039", "#FFF7D2", n);
+  const rim = n > 0.5 ? `rgba(6,16,32,${0.5 + n * 0.3})` : `rgba(255,255,255,${0.85 - n * 0.6})`;
   const step = 0.05;
   for (let i = 0; i < 14; i++) {
     vy += g * step; vx += G.wind * step; x += vx * step; y += vy * step;
     if (y > GROUND) break;
-    cx.beginPath(); cx.arc(x, y, 3.2 - i * 0.12, 0, TAU); cx.fill();
+    const r = 3.8 - i * 0.09;   // tapers to show distance, but stays legible
+    cx.fillStyle = rim;
+    cx.beginPath(); cx.arc(x, y, r + 1.7, 0, TAU); cx.fill();
+    cx.fillStyle = ink;
+    cx.globalAlpha = 0.95 - i * 0.015;
+    cx.beginPath(); cx.arc(x, y, r, 0, TAU); cx.fill();
+    cx.globalAlpha = 1;
   }
 }
 
@@ -2041,8 +2060,8 @@ function drawHUD() {
     drawClamIcon(bx + 12, cy + 30, 0.75, 0.3);
     txt(touchMode ? "tap 🦪 to throw" : "Q — banish a species!", bx + 28, cy + 31, 12, "#FFC9DE", "left");
   }
-  // earned boons, so the player can see what this run has become
-  const owned = BOONS.filter(b => lv(b.id) > 0);
+  // earned upgrades, so the player can see what this run has become
+  const owned = UPGRADES.filter(b => lv(b.id) > 0);
   if (owned.length) {
     let ox = bx + 4, oy = cy + (G.heldClam ? 52 : 26);
     for (const b of owned) {
@@ -2155,9 +2174,9 @@ function draftCardAt(x, y) {
 }
 function draftHit(x, y) {
   const i = draftCardAt(x, y);
-  if (i >= 0) takeBoon(i);
+  if (i >= 0) takeUpgrade(i);
 }
-function drawBoonIcon(b, x, y) {
+function drawUpgradeIcon(b, x, y) {
   cx.save();
   cx.translate(x, y);
   switch (b.id) {
@@ -2207,7 +2226,7 @@ function drawDraft() {
   if (!d) return;
   cx.fillStyle = "rgba(6,40,54,0.72)";
   cx.fillRect(0, 0, W, H);
-  txt("PICK A BOON", W / 2, 118, 44, "#FFFFFF", "center");
+  txt("PICK AN UPGRADE", W / 2, 118, 44, "#FFFFFF", "center");
   txt("Wave " + G.wave + " cleared — the monkey has learned something", W / 2, 154, 16, "#D8F7FF", "center");
 
   for (let i = 0; i < d.picks.length; i++) {
@@ -2225,7 +2244,7 @@ function drawDraft() {
     cx.globalAlpha = 0.18;
     cx.beginPath(); cx.arc(x + CARD.w / 2, CARD.y + 62, 38, 0, TAU); cx.fill();
     cx.globalAlpha = 1;
-    drawBoonIcon(b, x + CARD.w / 2, CARD.y + 62);
+    drawUpgradeIcon(b, x + CARD.w / 2, CARD.y + 62);
     // wording
     txt(b.name, x + CARD.w / 2, CARD.y + 122, 19, "#123A44", "center", false);
     wrapText(b.desc, x + CARD.w / 2, CARD.y + 148, CARD.w - 30, 13, "#43626B");
