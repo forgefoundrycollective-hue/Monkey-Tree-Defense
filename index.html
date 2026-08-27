@@ -455,6 +455,17 @@ window.__mtd = {
   pausePage: () => pauseMenu.page,
   togglePause: () => togglePause(),
   controlRows: () => controlRows(),
+  titleFit: () => {
+    const lines = titleLines(), m = titlePanelMetrics(lines);
+    cx.font = 'bold 16px "Trebuchet MS", Verdana, sans-serif';
+    return {
+      panelX: Math.round(m.x), panelW: Math.round(m.w),
+      right: Math.round(m.x + m.w),
+      bottom: Math.round(m.cy - 24 + lines.length * m.lh + 28),
+      widest: Math.round(Math.max(...lines.map(([t]) => cx.measureText(t).width))),
+      overflow: lines.filter(([t]) => m.x + m.padX + cx.measureText(t).width > m.x + m.w).map(([t]) => t),
+    };
+  },
 };
 
 // --------------------------- Upgrades -------------------------------
@@ -1081,7 +1092,22 @@ function updateShots(dt) {
           } else {
             G.bannedKind = e.kind;
             killEnemy(e, "BANISHED!");
-            banner(e.kind.toUpperCase() + "S BANISHED!", "None will return this wave", 2);
+            // Everything of that species already on the beach turns and runs.
+            // Leaving them marching in reads as the banishment having failed.
+            let routed = 0;
+            for (const other of G.enemies) {
+              if (other.dead || other.flee || other.kind !== e.kind) continue;
+              other.flee = true;
+              other.state = "move";
+              other.diving = false;
+              burst(other.x, other.y, "#FFC9DE", 6);
+              routed++;
+            }
+            // any of that species still queued in a squad never arrives
+            G.squadQueue = G.squadQueue.filter(q => q.kind !== e.kind);
+            banner(e.kind.toUpperCase() + "S BANISHED!", routed
+              ? "None will return this wave" : "None will come this wave", 2);
+            if (routed) addFloat(TREE_X + 24, 300, routed + " fled!", "#FFC9DE");
             sfx.jingleHome();
           }
           s.dead = true;
@@ -2445,6 +2471,33 @@ function wrapText(str, cxCenter, y, maxW, size, color) {
   lines.forEach((l, i) => txt(l, cxCenter, y + i * (size + 4), size, color, "center", false));
 }
 
+// The title card's copy. Only has to cover what surprises people — the full
+// reference lives in the pause menu.
+function titleLines() {
+  return [
+    [touchMode ? "▲ ▼ buttons — climb up & down" : "W / S  or  ▲ ▼  — climb up & down", "#D8F7FF"],
+    [touchMode ? "DRAG to aim, RELEASE to throw · 🥥 button for coconuts"
+               : "CLICK — banana · RIGHT-CLICK / E — coconut (BOOM)", "#FFE9A8"],
+    ["Coconuts & clams are heavier — they arc shorter than bananas", "#FFD8B8"],
+    ["Only " + BANANA_MAX + " bananas at a time — the bunch regrows, so pace them", "#FFEBC2"],
+    ["You can't throw straight down — climb low to defend low!", "#FFC9A8"],
+    [touchMode ? "Stick button — bonk anything on the ground when you're low"
+               : "F — stick bonk (only reaches the ground when you're low)", "#FFCFA8"],
+    [touchMode ? "Forgot a control? ⏸ → Controls, any time."
+                : "Forgot a control? Press P → Controls, any time.", "#C9FFB8"],
+  ];
+}
+// Panel geometry for the title card, shared with the test seam. Measuring the
+// copy beats guessing a width: these lines get edited often, and a fixed panel
+// left the longest ones hanging out over the sky.
+function titlePanelMetrics(lines) {
+  const cy = 338, lh = 25, padX = 20;
+  cx.font = 'bold 16px "Trebuchet MS", Verdana, sans-serif';
+  const textW = Math.max(...lines.map(([t]) => cx.measureText(t).width));
+  const w = Math.min(W - 24, textW + padX * 2);
+  const x = Math.min(W / 2 - 40, W - 12 - w);
+  return { cy, lh, padX, textW, w, x };
+}
 function drawTitle() {
   cx.fillStyle = "rgba(8,40,60,0.18)";
   cx.fillRect(0, 0, W, H);
@@ -2472,24 +2525,11 @@ function drawTitle() {
   txt(touchMode ? "TAP TO START!" : "CLICK TO START!", 0, 0, 36, "#FFFFFF", "center");
   cx.restore();
 
-  // Seven lines, sized to sit inside the canvas — the full reference lives
-  // in the pause menu, so this only has to cover what surprises people.
-  const lines = [
-    [touchMode ? "▲ ▼ buttons — climb up & down" : "W / S  or  ▲ ▼  — climb up & down", "#D8F7FF"],
-    [touchMode ? "DRAG to aim, RELEASE to throw · 🥥 button for coconuts"
-               : "CLICK — banana · RIGHT-CLICK / E — coconut (BOOM)", "#FFE9A8"],
-    ["Coconuts & clams are heavier — they arc shorter than bananas", "#FFD8B8"],
-    ["Only " + BANANA_MAX + " bananas at a time — the bunch regrows, so pace them", "#FFEBC2"],
-    ["You can't throw straight down — climb low to defend low!", "#FFC9A8"],
-    [touchMode ? "Stick button — bonk anything on the ground when you're low"
-               : "F — stick bonk (only reaches the ground when you're low)", "#FFCFA8"],
-    [touchMode ? "Forgot a control? ⏸ → Controls, any time."
-                : "Forgot a control? Press P → Controls, any time.", "#C9FFB8"],
-  ];
-  const cy = 338, lh = 25;
+  const lines = titleLines();
+  const m = titlePanelMetrics(lines);
   cx.fillStyle = "rgba(10,45,60,0.55)";
-  roundRect(W / 2 - 40, cy - 24, 470, lines.length * lh + 28, 16); cx.fill();
-  lines.forEach(([text, col], i) => txt(text, W / 2 - 20, cy + i * lh, 16, col, "left"));
+  roundRect(m.x, m.cy - 24, m.w, lines.length * m.lh + 28, 16); cx.fill();
+  lines.forEach(([text, col], i) => txt(text, m.x + m.padX, m.cy + i * m.lh, 16, col, "left"));
   if (G.hi > 0) txt("BEST SCORE  " + G.hi, W / 2 - 150, 300, 18, "#FFE9A8", "center");
 }
 // -------------------------- Run summary ---------------------------

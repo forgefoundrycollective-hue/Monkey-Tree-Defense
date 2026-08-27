@@ -84,6 +84,13 @@ export default async function run() {
       rec.watch(page);
       await quiesce(page);
 
+      // --- the title card's copy has to fit inside its panel ---
+      const fit = await page.evaluate(() => window.__mtd.titleFit());
+      rec.check("no title line overflows the panel",
+        fit.overflow.length === 0, JSON.stringify(fit.overflow));
+      rec.check("the title panel stays inside the canvas",
+        fit.panelX >= 0 && fit.right <= 960 && fit.bottom <= 540, JSON.stringify(fit));
+
       const rows = await page.evaluate(() => window.__mtd.pauseRows().map(r => r.label));
       rec.check("the pause menu offers resume, controls, and the options",
         rows.join("|") === "Resume|Controls|Sound|Screen shake|Aim preview", JSON.stringify(rows));

@@ -121,18 +121,47 @@ export default async function run() {
     await page.evaluate(() => {
       const G = window.__mtd.G;
       G.waveLull = 1e9;
-      G.enemies.length = 0; G.shots.length = 0;
-      G.enemies.push({ kind: "snake", side: 1, hp: 1, maxhp: 1, r: 17, x: 500, y: 350,
-                       vx: -100, state: "move", t: 0, atk: 99, flash: 0, flee: false, bob: 0 });
+      G.enemies.length = 0; G.shots.length = 0; G.squadQueue.length = 0;
+      const snake = x => ({ kind: "snake", side: 1, hp: 1, maxhp: 1, r: 17, x, y: 350,
+                            vx: -100, state: "move", t: 0, atk: 99, flash: 0, flee: false, bob: 0 });
+      // one to hit, plus bystanders of the same and a different species
+      G.enemies.push(snake(500), snake(700), snake(820));
+      G.enemies.push({ kind: "crab", side: 1, hp: 2, maxhp: 2, r: 18, x: 760, y: 460,
+                       vx: -60, state: "move", t: 0, atk: 99, flash: 0, flee: false, bob: 0 });
+      G.squadQueue.push({ kind: "snake", delay: 5 }, { kind: "crab", delay: 5 });
       G.heldClam = false;
       G.shots.push({ kind: "clam", x: 470, y: 350, vx: 400, vy: 0, g: 0, r: 14, spin: 0, t: 0 });
     });
     await step(page, 0.3);
-    const banished = await page.evaluate(() => ({
-      banned: window.__mtd.G.bannedKind, left: window.__mtd.G.enemies.length,
+    const banished = await page.evaluate(() => {
+      const G = window.__mtd.G;
+      const snakes = G.enemies.filter(e => e.kind === "snake");
+      const crabs = G.enemies.filter(e => e.kind === "crab");
+      return {
+        banned: G.bannedKind,
+        snakesLeft: snakes.length,
+        allFleeing: snakes.every(e => e.flee),
+        crabUnaffected: crabs.length === 1 && !crabs[0].flee,
+        queued: G.squadQueue.map(q => q.kind),
+      };
+    });
+    rec.check("clam kills the one it hits and banishes that species",
+      banished.banned === "snake", JSON.stringify(banished));
+    rec.check("banished bystanders already on screen turn and flee",
+      banished.snakesLeft === 2 && banished.allFleeing, JSON.stringify(banished));
+    rec.check("other species carry on unbothered",
+      banished.crabUnaffected, JSON.stringify(banished));
+    rec.check("a queued squad of the banished species never arrives",
+      banished.queued.join(",") === "crab", JSON.stringify(banished.queued));
+
+    // the routed ones actually leave rather than milling about
+    await step(page, 6);
+    const gone = await page.evaluate(() => ({
+      snakes: window.__mtd.G.enemies.filter(e => e.kind === "snake").length,
     }));
-    rec.check("clam kills and banishes that species",
-      banished.banned === "snake" && banished.left === 0, JSON.stringify(banished));
+    rec.check("routed enemies run right off the beach", gone.snakes === 0, JSON.stringify(gone));
+
+    await page.evaluate(() => { window.__mtd.G.enemies.length = 0; window.__mtd.G.squadQueue.length = 0; });
 
     const respawn = await page.evaluate(() => {
       const G = window.__mtd.G;
