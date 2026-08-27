@@ -50,6 +50,17 @@ const store = {
   get(k) { try { return localStorage.getItem(k); } catch (e) { return this._m && this._m[k]; } },
   set(k, v) { try { localStorage.setItem(k, v); } catch (e) { (this._m = this._m || {})[k] = v; } },
 };
+// Player options. Screen shake defaults off when the OS asks for reduced
+// motion, and every choice persists across sessions.
+const prefersReducedMotion = (() => {
+  try { return matchMedia("(prefers-reduced-motion: reduce)").matches; } catch (e) { return false; }
+})();
+const opts = {
+  shake: store.get("mtd_shake") !== null ? store.get("mtd_shake") === "1" : !prefersReducedMotion,
+  preview: store.get("mtd_preview") !== null ? store.get("mtd_preview") === "1" : true,
+};
+function setOpt(k, v) { opts[k] = v; store.set("mtd_" + k, v ? "1" : "0"); }
+
 function mulberry32(seed) {
   return function () {
     seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
@@ -63,6 +74,8 @@ function mulberry32(seed) {
 const keys = {};
 const mouse = { x: W * 0.7, y: H * 0.4, lmb: false };
 let touchMode = false;
+// a finger held down on the canvas is aiming, not throwing (see pointerup)
+const touchAim = { active: false, id: -1, moved: false };
 
 function toLogical(cxs, cys) {
   return { x: (cxs - view.ox) / view.scale, y: (cys - view.oy) / view.scale };
@@ -79,6 +92,7 @@ addEventListener("keydown", e => {
   if (e.code === "Space") throwBanana();
   if (e.code === "KeyF") swing();
   if (e.code === "KeyQ") throwClam();
+  if (G.state === "draft" && /^Digit[123]$/.test(e.code)) takeBoon(+e.code.slice(5) - 1);
 });
 addEventListener("keyup", e => { keys[e.code] = false; });
 
@@ -86,6 +100,9 @@ cv.addEventListener("contextmenu", e => e.preventDefault());
 cv.addEventListener("pointermove", e => {
   const p = toLogical(e.clientX, e.clientY);
   mouse.x = p.x; mouse.y = p.y;
+  if (G.state === "draft" && G.draft) G.draft.hover = draftCardAt(p.x, p.y);
+  if (G.paused) pauseMenu.hover = pauseRowAt(p.x, p.y);
+  if (touchAim.active && e.pointerId === touchAim.id) touchAim.moved = true;
 });
 cv.addEventListener("pointerdown", e => {
   audioInit();
@@ -93,16 +110,30 @@ cv.addEventListener("pointerdown", e => {
   mouse.x = p.x; mouse.y = p.y;
   if (e.pointerType === "touch") touchMode = true;
   if (G.state === "title") { startGame(); return; }
-  if (G.paused) { togglePause(); return; }
+  if (G.state === "draft") { draftHit(p.x, p.y); return; }
+  if (G.paused) { pauseHit(p.x, p.y); return; }
   if (touchMode && touchButtonHit(p.x, p.y, true)) return;
   if (e.button === 2) { throwCoconut(); return; }
+  if (touchMode) {
+    // Touch aims by dragging: hold to line the shot up against the arc
+    // preview, release to throw. A quick tap still throws where you tapped.
+    touchAim.active = true;
+    touchAim.id = e.pointerId;
+    touchAim.moved = false;
+    return;
+  }
   mouse.lmb = true;
   throwBanana();
 });
 addEventListener("pointerup", e => {
   mouse.lmb = false;
   touchBtns.up.held = touchBtns.down.held = false;
+  if (touchAim.active && (e.pointerId === touchAim.id || e.pointerId === undefined)) {
+    touchAim.active = false;
+    if (G.state === "play" && !G.paused) throwBanana();
+  }
 });
+addEventListener("pointercancel", () => { touchAim.active = false; });
 
 // On-screen touch buttons (climb up / down, coconut, stick swing, clam)
 const touchBtns = {
@@ -111,13 +142,15 @@ const touchBtns = {
   coco:  { x: W - 62, y: H - 56, r: 44, held: false },
   swing: { x: W - 160, y: H - 46, r: 38, held: false },
   clam:  { x: W - 62, y: H - 156, r: 34, held: false },
+  pause: { x: W - 34, y: 108, r: 22, held: false },   // no keyboard on a phone
 };
 function touchButtonHit(x, y, press) {
-  for (const k of ["up", "down", "coco", "swing", "clam"]) {
+  for (const k of ["up", "down", "coco", "swing", "clam", "pause"]) {
     if (k === "clam" && !G.heldClam) continue;
     const b = touchBtns[k];
     if ((x - b.x) ** 2 + (y - b.y) ** 2 < (b.r + 8) ** 2) {
-      if (k === "coco") { if (press) throwCoconut(); }
+      if (k === "pause") { if (press) togglePause(); }
+      else if (k === "coco") { if (press) throwCoconut(); }
       else if (k === "swing") { if (press) swing(); }
       else if (k === "clam") { if (press) throwClam(); }
       else b.held = press;
@@ -290,6 +323,9 @@ const G = {
   clam: null, heldClam: false, bannedKind: null,
   squadQueue: [], bossWave: false, heartT: 0,
   bananas: BANANA_MAX, bananaRegrow: 0, bananaFlash: 0,
+  boons: {}, draft: null,
+  modifier: null, wind: 0, night: 0,
+  frozen: false,   // tests drive the clock themselves; see window.__mtd.freeze
   banner: { text: "", sub: "", t: 0, dur: 0 },
   tree: { hp: 100, max: 100, stage: 0, sway: 0, hitT: 0, fallT: 0, fallAngle: 0, crashed: false, seed: 7 },
   fallenTree: null,        // {x, angle, seed, stage}
@@ -304,10 +340,94 @@ const G = {
     hopFrom: null,
   },
 };
-window.__mtd = { G, forceFall: () => { if (G.state === "play") damageTree(G.tree.hp, TREE_X, 300); }, start: () => startGame() };
+// Test seam — the headless suites in tests/ drive the game through this.
+// Keep it in sync with tests/harness.mjs if you add mechanics worth covering.
+window.__mtd = {
+  G,
+  consts: () => ({ TREE_X, GROUND, CLIMB_MIN, CLIMB_MAX, BANANA_MAX, BANANA_REGROW, CANOPY }),
+  forceFall: () => { if (G.state === "play") damageTree(G.tree.hp, TREE_X, 300); },
+  start: () => startGame(),
+  step: dt => update(dt),          // advance simulated time deterministically
+  freeze: on => { G.frozen = !!on; },  // stop the rAF loop so only step() advances time
+  throwBanana: () => throwBanana(),
+  throwCoconut: () => throwCoconut(),
+  throwClam: () => throwClam(),
+  swing: () => swing(),
+  setWave: n => setWave(n),
+  spawnEnemy: kind => spawnEnemy(kind),
+  spawnBoss: () => spawnBoss(),
+  aim: (x, y) => { mouse.x = x; mouse.y = y; },
+  openDraft: () => openDraft(),
+  takeBoon: i => takeBoon(i),
+  boonMax: id => boonById[id].max,
+  opts, setOpt: (k, v) => setOpt(k, v),
+  touch: () => ({ mode: touchMode, aiming: touchAim.active }),
+  touchButtonHit: (x, y, press) => { touchMode = true; return touchButtonHit(x, y, press); },
+  pauseRows: () => pauseRows().map(r => ({ label: r.label, value: r.value })),
+  pauseHit: (x, y) => pauseHit(x, y),
+  pauseRowAt: (x, y) => pauseRowAt(x, y),
+};
+
+// --------------------------- Boons -------------------------------
+// Every third wave (and after each King) the monkey picks one of three
+// upgrades. Each one bends a rule the player already understands, so the
+// choice is about how you want to fight, not about a bigger number.
+const BOONS = [
+  { id: "bunch",  max: 3, short: "Bunch",    name: "Bigger Bunch",    desc: "+3 bananas in the stash",        tint: "#FFD23B" },
+  { id: "ripen",  max: 3, short: "Ripening", name: "Fast Ripening",   desc: "the bunch regrows much quicker",  tint: "#8CFF6B" },
+  { id: "ripe",   max: 2, short: "Heavy",    name: "Heavy Bananas",   desc: "+1 damage per banana",            tint: "#FFB03B" },
+  { id: "stick",  max: 3, short: "Stick",    name: "Longer Stick",    desc: "more bonk reach and damage",      tint: "#B5713A" },
+  { id: "blast",  max: 3, short: "Blast",    name: "Bigger Coconuts", desc: "wider blast, +1 damage",          tint: "#8A5228" },
+  { id: "limber", max: 2, short: "Limber",   name: "Limber Shoulder", desc: "throw far steeper downward",      tint: "#7FE3FF" },
+  { id: "bark",   max: 4, short: "Bark",     name: "Iron Bark",       desc: "+25 max tree HP, healed now",     tint: "#6BBF59" },
+  { id: "pearl",  max: 2, short: "Pearl",    name: "Pearl Diver",     desc: "clams wash up far more often",    tint: "#FF9CCB" },
+];
+const boonById = Object.fromEntries(BOONS.map(b => [b.id, b]));
+const lv = id => G.boons[id] || 0;
+// Derived stats — every hardcoded value a boon can touch reads through these.
+const bananaMax    = () => BANANA_MAX + lv("bunch") * 3;
+const bananaRate   = () => BANANA_REGROW * Math.pow(0.68, lv("ripen"));
+const bananaDamage = () => 1 + lv("ripe");
+const stickReach   = () => 80 + lv("stick") * 34;
+const stickDamage  = () => 2 + lv("stick");
+const cocoBlast    = () => 62 + lv("blast") * 24;
+const cocoDamage   = () => 3 + lv("blast");
+const aimDown      = () => AIM_DOWN + lv("limber") * 0.55;
+const clamChance   = () => 0.45 + lv("pearl") * 0.35;
+const ROMAN = ["", "I", "II", "III", "IV"];
+
+function shouldDraft(wave) { return wave % 3 === 0 || wave % 5 === 0; }
+function openDraft() {
+  const pool = BOONS.filter(b => lv(b.id) < b.max);
+  if (!pool.length) { startWave(G.wave + 1); return; }
+  const picks = [];
+  const bag = pool.slice();
+  while (picks.length < 3 && bag.length) picks.push(...bag.splice(Math.floor(rnd(bag.length)), 1));
+  G.draft = { picks, t: 0, hover: -1 };
+  G.state = "draft";
+  G.banner = { text: "", sub: "", t: 0, dur: 0 };  // don't read through the overlay
+  sfx.jingleWave();
+}
+function takeBoon(i) {
+  if (G.state !== "draft" || !G.draft) return;
+  const b = G.draft.picks[i];
+  if (!b) return;
+  G.boons[b.id] = lv(b.id) + 1;
+  if (b.id === "bark") {
+    G.tree.max += 25;
+    G.tree.hp = G.tree.max;
+    G.tree.stage = 0;
+  }
+  if (b.id === "bunch") G.bananas = bananaMax();
+  G.draft = null;
+  G.state = "play";
+  addFloat(TREE_X + 24, 300, b.name + " " + ROMAN[lv(b.id)] + "!", b.tint);
+  sfx.jingleHome();
+  startWave(G.wave + 1);
+}
 
 function banner(text, sub = "", dur = 2.2) { G.banner = { text, sub, t: 0, dur }; }
-function shake(a) { G.shakeAmp = Math.max(G.shakeAmp, a); }
+function shake(a) { if (opts.shake) G.shakeAmp = Math.max(G.shakeAmp, a); }
 
 // -------------------------- Decorations --------------------------
 const seaR = mulberry32(42);
@@ -337,22 +457,37 @@ function startGame() {
   if (G.state !== "title") return;
   audioInit();
   G.state = "play"; G.playT = 0; G.score = 0; G.treesLost = 0;
+  G.boons = {}; G.draft = null;
+  G.tree.max = 100; G.bananas = BANANA_MAX; G.bananaRegrow = BANANA_REGROW;
   G.tree.hp = G.tree.max; G.tree.stage = 0;
   G.enemies.length = 0; G.shots.length = 0;
   sfx.chatter();
   startWave(1);
 }
+// From wave 8 a wave can carry a modifier that changes how you play it,
+// not just how much of it there is.
+const MODIFIERS = [
+  { id: "windy", name: "WINDY!",  sub: "the sea breeze bends every throw" },
+  { id: "night", name: "NIGHTFALL", sub: "harder to see them coming" },
+  { id: "swarm", name: "SWARM!",  sub: "a lot of them, all at once" },
+];
 function setWave(n) {
   G.wave = n;
   G.bannedKind = null;
   G.squadQueue = [];
   G.bossWave = n % 5 === 0;
+  G.modifier = (n >= 8 && !G.bossWave && Math.random() < 0.45) ? pick(MODIFIERS) : null;
+  G.wind = G.modifier && G.modifier.id === "windy" ? pick([-1, 1]) * rnd(150, 260) : 0;
   if (G.bossWave) {
     G.toSpawn = 4;        // light escort — the King is the show
     G.interval = 3.2;
   } else {
     G.toSpawn = Math.min(40, 4 + n * 2 + Math.floor(n * n * 0.1));
     G.interval = Math.max(0.5, Math.min(1.7, 2.1 - n * 0.11));
+    if (G.modifier && G.modifier.id === "swarm") {
+      G.toSpawn = Math.min(60, Math.round(G.toSpawn * 1.6));
+      G.interval *= 0.55;
+    }
   }
   G.spawnT = 1.4;
   G.waveLull = 0;
@@ -365,7 +500,8 @@ function startWave(n) {
     sfx.horn();
     spawnBoss();
   } else {
-    banner("WAVE " + n, n === 1 ? "Protect your tree!" : "They're getting faster!");
+    if (G.modifier) { banner("WAVE " + n + " — " + G.modifier.name, G.modifier.sub, 2.6); sfx.alarm(); }
+    else banner("WAVE " + n, n === 1 ? "Protect your tree!" : "They're getting faster!");
     sfx.jingleWave();
   }
 }
@@ -381,6 +517,10 @@ const KINDS = {
   crab:  { hp: 2,  r: 18, score: 15,  dmg: 4,  atkCd: 1.1, speed: () => Math.min(130, 52 + (G.wave - 1) * 4) },
   snake: { hp: 1,  r: 17, score: 20,  dmg: 4,  atkCd: 0.8, speed: () => Math.min(210, 105 + (G.wave - 1) * 5) },
   boar:  { hp: 6,  r: 26, score: 50,  dmg: 9,  atkCd: 1.4, speed: () => Math.min(140, 62 + (G.wave - 1) * 3.5) },
+  // armored: bananas just clank off, so it forces a coconut or the stick
+  hermit:{ hp: 4,  r: 21, score: 40,  dmg: 6,  atkCd: 1.3, speed: () => Math.min(120, 48 + (G.wave - 1) * 3), armored: true },
+  // thief: ignores the tree entirely and robs the banana stash
+  gull:  { hp: 1,  r: 19, score: 35,  dmg: 0,  atkCd: 1.0, speed: () => Math.min(240, 150 + (G.wave - 1) * 4), thief: true },
   boss:  { hp: 25, r: 44, score: 250, dmg: 15, atkCd: 1.4, speed: () => 40 },
 };
 function pickKind() {
@@ -389,6 +529,8 @@ function pickKind() {
   if (w >= 2) bag.push(["crab", 8]);
   if (w >= 4) bag.push(["snake", 5]);
   if (w >= 6) bag.push(["boar", 3]);
+  if (w >= 8) bag.push(["hermit", 4]);
+  if (w >= 9) bag.push(["gull", 4]);
   const allowed = bag.filter(b => b[0] !== G.bannedKind);
   if (!allowed.length) return null;
   let total = allowed.reduce((s, b) => s + b[1], 0), roll = rnd(total);
@@ -402,19 +544,22 @@ function spawnEnemy(kind) {
   if (G.clam) { G.clam = null; addFloat(TREE_X + 46, GROUND - 34, "the clam washed away…", "#D8F7FF"); }
   const w = G.wave;
   let side = 1; // 1 = from right
-  if (kind === "bird" && w >= 3 && Math.random() < 0.22) side = -1;
-  if (kind !== "bird" && w >= 6 && Math.random() < 0.15) side = -1;
+  const flier = kind === "bird" || kind === "gull";
+  if (flier && w >= 3 && Math.random() < 0.22) side = -1;
+  if (!flier && w >= 6 && Math.random() < 0.15) side = -1;
 
   const k = KINDS[kind];
   const e = {
     kind, side, hp: k.hp, maxhp: k.hp, r: k.r,
     x: side === 1 ? W + 60 : -60,
-    y: kind === "bird" ? rnd(120, 330) : GROUND - 10,
+    y: (kind === "bird" || kind === "gull") ? rnd(120, 330) : GROUND - 10,
     vx: -side * k.speed(),
     state: "move", t: rnd(10), atk: 0, flash: 0, flee: false,
     bob: rnd(TAU),
   };
   if (kind === "boar") e.y = GROUND - 14;
+  if (k.thief) { e.thief = true; e.loot = 0; }
+  if (k.armored) e.armored = true;
   G.enemies.push(e);
 }
 function spawnBoss() {
@@ -425,8 +570,30 @@ function spawnBoss() {
     state: "move", t: 0, atk: 0, flash: 0, flee: false, bob: 0,
   });
 }
+// A gull that reaches the monkey takes bananas out of the stash and flees.
+// Shoot it down before it escapes and the bananas fall back to you.
+function robStash(e) {
+  const take = Math.min(G.bananas, 3);
+  e.flee = true;
+  e.loot = take;
+  if (take > 0) {
+    G.bananas -= take;
+    G.bananaRegrow = bananaRate();
+    addFloat(e.x, e.y - 24, "-" + take + " 🍌", "#FF8A5C");
+    G.bananaFlash = 0.5;
+    shake(4);
+  } else {
+    addFloat(e.x, e.y - 24, "nothing to steal!", "#D8F7FF");
+  }
+  sfx.squawk();
+}
 function killEnemy(e, bonusLabel) {
   const k = KINDS[e.kind];
+  if (e.thief && e.loot > 0) {
+    G.bananas = Math.min(bananaMax(), G.bananas + e.loot);
+    addFloat(e.x, e.y - 40, "+" + e.loot + " 🍌 back!", "#8CFF6B");
+    e.loot = 0;
+  }
   if (G.comboT > 0) G.combo++; else G.combo = 1;
   G.comboT = 2;
   const pts = k.score * G.combo;
@@ -463,6 +630,15 @@ function updateEnemy(e, dt) {
     return;
   }
   const k = KINDS[e.kind];
+  if (e.kind === "gull") {
+    // makes straight for the monkey, grabs a beakful of bananas, and bolts
+    const m = G.monkey, sp = k.speed();
+    const dx = m.x - e.x, dy = (m.y - 16) - e.y, d = Math.hypot(dx, dy) || 1;
+    e.x += dx / d * sp * dt;
+    e.y += dy / d * sp * dt + Math.sin(e.t * 9 + e.bob) * 16 * dt;
+    if (d < 30) robStash(e);
+    return;
+  }
   if (e.state === "move") {
     if (e.kind === "bird") {
       // from wave 6, birds close to the canopy may tuck in and dive-bomb
@@ -636,7 +812,7 @@ function updateArrive(dt) {
     const checkpoint = Math.max(1, Math.floor(G.wave / 2));
     setWave(checkpoint);
     if (G.bossWave) spawnBoss();  // a checkpoint can land on a King wave
-    G.bananas = BANANA_MAX; G.bananaRegrow = BANANA_REGROW;
+    G.bananas = bananaMax(); G.bananaRegrow = bananaRate();
     banner("HOME SWEET HOME!", "Tree #" + (G.treesLost + 1) + " — back to Wave " + checkpoint, 2.6);
     sfx.jingleHome();
   }
@@ -650,7 +826,7 @@ const AIM_UP = -1.54, AIM_DOWN = 0.35; // radians vs horizontal, y-down
 function clampAim(raw) {
   const facingRight = Math.cos(raw) >= 0;
   const rel = facingRight ? raw : (raw >= 0 ? Math.PI - raw : -Math.PI - raw);
-  const c = clamp(rel, AIM_UP, AIM_DOWN);
+  const c = clamp(rel, AIM_UP, aimDown());
   return {
     a: facingRight ? c : (c >= 0 ? Math.PI - c : -Math.PI - c),
     clamped: c !== rel,
@@ -673,7 +849,7 @@ function throwBanana() {
   }
   G.bananas--;
   G.bananaCd = 0.24;
-  G.bananaRegrow = BANANA_REGROW;  // the regrow clock restarts on every spend
+  G.bananaRegrow = bananaRate();  // the regrow clock restarts on every spend
   const h = handPos(), a = clampAim(aimAngle()).a, sp = 640;
   G.shots.push({ kind: "banana", x: h.x, y: h.y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, g: 1050, r: 12, spin: rnd(TAU), t: 0 });
   G.monkey.throwT = 0.18;
@@ -707,9 +883,9 @@ function swing() {
   m.swingCd = 0.6; m.swingT = 0.25;
   sfx.bonk();
   for (const e of G.enemies) {
-    if (e.dead || e.flee) continue;
-    if ((e.x - m.x) ** 2 + (e.y - m.y) ** 2 < 80 * 80) {
-      e.hp -= 2; e.flash = 1;
+    if (e.dead || (e.flee && !e.thief)) continue;
+    if ((e.x - m.x) ** 2 + (e.y - m.y) ** 2 < stickReach() ** 2) {
+      e.hp -= stickDamage(); e.flash = 1;
       e.x += Math.sign(e.x - m.x || 1) * 26;
       burst(e.x, e.y, "#FFD23B", 8);
       addFloat(e.x, e.y - 26, "BONK!", "#FFD23B");
@@ -723,9 +899,10 @@ function explodeCoco(s) {
   G.parts.push({ kind: "ring", x: s.x, y: s.y, vx: 0, vy: 0, g: 0, life: 0.35, t: 0, rot: 0, color: "#FFFFFF" });
   for (let i = 0; i < 6; i++) G.parts.push({ kind: "chip", x: s.x, y: s.y, vx: rnd(-160, 160), vy: rnd(-220, -40), g: 700, life: rnd(0.4, 0.8), t: 0, rot: rnd(TAU), color: pick(["#8A5228", "#6B3E1D", "#FFF6E0"]) });
   for (const e of G.enemies) {
-    if (!e.dead && !e.flee && (e.x - s.x) ** 2 + (e.y - s.y) ** 2 < 62 * 62) {
-      e.hp -= 3; e.flash = 1;
-      if (e.hp <= 0) killEnemy(e); else { addFloat(e.x, e.y - 20, "-3", "#FFB03B"); }
+    if (!e.dead && (!e.flee || e.thief) && (e.x - s.x) ** 2 + (e.y - s.y) ** 2 < cocoBlast() ** 2) {
+      const dmg = cocoDamage();
+      e.hp -= dmg; e.flash = 1;
+      if (e.hp <= 0) killEnemy(e); else { addFloat(e.x, e.y - 20, "-" + dmg, "#FFB03B"); }
     }
   }
   s.dead = true;
@@ -734,19 +911,27 @@ function updateShots(dt) {
   for (const s of G.shots) {
     s.t += dt;
     s.vy += s.g * dt;
+    s.vx += G.wind * dt;
     s.x += s.vx * dt;
     s.y += s.vy * dt;
     s.spin += dt * (s.kind === "banana" ? 14 : 8);
     // enemy hits
     for (const e of G.enemies) {
-      if (e.dead || e.flee) continue;
+      if (e.dead || (e.flee && !e.thief)) continue;
       const rr = e.r + s.r;
       if ((e.x - s.x) ** 2 + (e.y - s.y) ** 2 < rr * rr) {
-        if (s.kind === "banana") {
-          e.hp -= 1; e.flash = 1;
+        if (s.kind === "banana" && e.armored) {
+          // the shell shrugs it off — bring a coconut or the stick
+          burst(s.x, s.y, "#D8D0C0", 6);
+          addFloat(e.x, e.y - 22, "CLANK!", "#D8D0C0");
+          sfx.crabClick();
+          s.dead = true;
+        } else if (s.kind === "banana") {
+          const dmg = bananaDamage();
+          e.hp -= dmg; e.flash = 1;
           burst(s.x, s.y, "#FFD23B", 7);
           sfx.splat();
-          if (e.hp <= 0) killEnemy(e); else addFloat(e.x, e.y - 20, "-1", "#FFFFFF");
+          if (e.hp <= 0) killEnemy(e); else addFloat(e.x, e.y - 20, "-" + dmg, "#FFFFFF");
           s.dead = true;
         } else if (s.kind === "clam") {
           // pearl strike: banish this species for the rest of the wave
@@ -825,7 +1010,7 @@ function frame(now) {
   requestAnimationFrame(frame);
   let dt = Math.min(0.033, (now - last) / 1000);
   last = now;
-  if (!G.paused) update(dt);
+  if (!G.paused && !G.frozen) update(dt);
   render();
 }
 function update(dt) {
@@ -842,10 +1027,12 @@ function update(dt) {
   G.cocoCd = Math.max(0, G.cocoCd - dt);
   G.bananaFlash = Math.max(0, G.bananaFlash - dt);
   // the bunch regrows one banana at a time
-  if (G.bananas < BANANA_MAX) {
+  if (G.bananas < bananaMax()) {
     G.bananaRegrow -= dt;
-    if (G.bananaRegrow <= 0) { G.bananas++; G.bananaRegrow = BANANA_REGROW; }
-  } else G.bananaRegrow = BANANA_REGROW;
+    if (G.bananaRegrow <= 0) { G.bananas++; G.bananaRegrow = bananaRate(); }
+  } else G.bananaRegrow = bananaRate();
+  const wantNight = G.state === "play" && G.modifier && G.modifier.id === "night" ? 1 : 0;
+  G.night += clamp(wantNight - G.night, -dt * 0.8, dt * 0.8);
   G.comboT = Math.max(0, G.comboT - dt);
   if (G.comboT === 0) G.combo = 0;
   G.banner.t += dt;
@@ -901,13 +1088,17 @@ function update(dt) {
         G.tree.hp = Math.min(G.tree.max, G.tree.hp + 15);
         const frac = G.tree.hp / G.tree.max;
         G.tree.stage = frac > 0.66 ? 0 : frac > 0.33 ? 1 : 2;
-        G.bananas = BANANA_MAX; G.bananaRegrow = BANANA_REGROW;
+        G.bananas = bananaMax(); G.bananaRegrow = bananaRate();
         sfx.heal();
         // sometimes the tide leaves a gift at the trunk base…
-        if (!G.heldClam && Math.random() < 0.45) G.clam = { t: 0 };
+        if (!G.heldClam && Math.random() < clamChance()) G.clam = { t: 0 };
       }
       G.waveLull -= dt;
-      if (G.waveLull <= 0) { G.waveLull = 0; startWave(G.wave + 1); }
+      if (G.waveLull <= 0) {
+        G.waveLull = 0;
+        if (shouldDraft(G.wave)) openDraft();
+        else startWave(G.wave + 1);
+      }
     }
     for (const q of G.squadQueue) { q.delay -= dt; if (q.delay <= 0) spawnEnemy(q.kind); }
     G.squadQueue = G.squadQueue.filter(q => q.delay > 0);
@@ -972,10 +1163,13 @@ function render() {
   drawMonkey();
   for (const sh of G.shots) drawShot(sh);
   drawParticles();
+  drawNight();      // dusk tint sits over the world but under floats and HUD
+  drawWind();
   drawFloats();
   drawHUD();
 
   if (G.state === "title") drawTitle();
+  if (G.state === "draft") drawDraft();
   if (G.paused) drawPaused();
 
   cx.restore();
@@ -990,8 +1184,10 @@ function drawSky() {
   cx.fillStyle = g;
   cx.fillRect(0, 0, W, HORIZON + 30);
 
-  // smiling sun
+  // smiling sun — turns in for the night on NIGHTFALL waves
   const sx = 830, sy = 84;
+  cx.save();
+  cx.globalAlpha = 1 - G.night;
   cx.save();
   cx.translate(sx, sy);
   cx.rotate(G.t * 0.15);
@@ -1009,6 +1205,18 @@ function drawSky() {
   cx.beginPath(); cx.arc(sx - 13, sy - 5, 4.5, 0, TAU); cx.arc(sx + 13, sy - 5, 4.5, 0, TAU); cx.fill();
   cx.strokeStyle = "#F7A825"; cx.lineWidth = 3.5; cx.lineCap = "round";
   cx.beginPath(); cx.arc(sx, sy + 6, 14, 0.15 * Math.PI, 0.85 * Math.PI); cx.stroke();
+  cx.restore();
+  // a sleepy moon takes its place
+  if (G.night > 0.01) {
+    cx.save();
+    cx.globalAlpha = G.night;
+    cx.fillStyle = "#F3F1DC";
+    cx.beginPath(); cx.arc(sx, sy, 34, 0, TAU); cx.fill();
+    cx.fillStyle = "#DAD7BE";
+    cx.beginPath(); cx.arc(sx - 11, sy - 9, 6, 0, TAU); cx.arc(sx + 9, sy + 6, 8, 0, TAU);
+    cx.arc(sx + 4, sy - 14, 4.5, 0, TAU); cx.fill();
+    cx.restore();
+  }
 
   // clouds
   for (const c of clouds) {
@@ -1342,7 +1550,9 @@ function drawEnemy(e) {
   const dir = e.flee ? Math.sign(-e.vx) || 1 : Math.sign(e.vx) || -1; // facing
   if (e.flash > 0) { cx.globalAlpha = 1; }
   if (e.kind === "bird") drawBird(e, dir);
+  else if (e.kind === "gull") drawGull(e, dir);
   else if (e.kind === "crab") drawCrab(e, dir);
+  else if (e.kind === "hermit") drawHermit(e, dir);
   else if (e.kind === "snake") drawSnake(e, dir);
   else if (e.kind === "boss") drawBoss(e, dir);
   else drawBoar(e, dir);
@@ -1495,6 +1705,91 @@ function drawBoar(e, dir) {
   cx.beginPath(); cx.moveTo(24, -4); cx.quadraticCurveTo(32, -8 + gallop * 3, 30, -1); cx.stroke();
 }
 
+// Seagull: white, quick, and only interested in your bananas.
+function drawGull(e, dir) {
+  cx.scale(-dir, 1);
+  const flap = Math.sin(e.t * 18) * 1.1;
+  // tail
+  cx.fillStyle = "#E8EEF2";
+  cx.beginPath(); cx.moveTo(13, -2); cx.lineTo(26, -9); cx.lineTo(24, 4); cx.closePath(); cx.fill();
+  // body
+  cx.fillStyle = "#FFFFFF";
+  cx.beginPath(); cx.ellipse(0, 0, 15, 11, 0, 0, TAU); cx.fill();
+  // far wing
+  cx.fillStyle = "#C9D6DE";
+  cx.save(); cx.translate(2, -3); cx.rotate(-flap * 0.7);
+  cx.beginPath(); cx.ellipse(4, 0, 15, 5, 0, 0, TAU); cx.fill();
+  cx.restore();
+  // head + beak
+  cx.fillStyle = "#FFFFFF";
+  cx.beginPath(); cx.arc(-11, -7, 7.5, 0, TAU); cx.fill();
+  cx.fillStyle = "#FFB03B";
+  cx.beginPath(); cx.moveTo(-17, -6); cx.lineTo(-27, -3); cx.lineTo(-17, -1); cx.closePath(); cx.fill();
+  cx.fillStyle = "#2B2F38";
+  cx.beginPath(); cx.arc(-13, -9, 1.7, 0, TAU); cx.fill();
+  // near wing
+  cx.fillStyle = "#F2F6F9";
+  cx.save(); cx.translate(1, -2); cx.rotate(flap);
+  cx.beginPath(); cx.ellipse(2, 0, 17, 6, 0, 0, TAU); cx.fill();
+  cx.fillStyle = "#3B3E4A";
+  cx.beginPath(); cx.ellipse(15, 0, 5, 4.5, 0, 0, TAU); cx.fill();
+  cx.restore();
+  // loot in the beak
+  if (e.loot > 0) {
+    cx.save(); cx.scale(-dir, 1);
+    for (let i = 0; i < e.loot; i++) drawBananaIcon(dir * (22 + i * 3), 2 + i * 4, 0.5, 0.5 + i);
+    cx.restore();
+  }
+}
+// Hermit crab: wears a shell, so bananas just clank off it.
+function drawHermit(e, dir) {
+  const wig = Math.sin(e.t * 10) * 2.5;
+  const pinch = e.state === "attack" ? Math.abs(Math.sin(e.t * 9)) * 0.5 : 0.15;
+  // legs
+  cx.strokeStyle = "#8C5A3C"; cx.lineWidth = 3.5; cx.lineCap = "round";
+  for (const sx of [-1, 1]) {
+    for (let i = 0; i < 3; i++) {
+      const lx = sx * (7 + i * 5), ly = 8;
+      cx.beginPath();
+      cx.moveTo(lx * 0.6, 4);
+      cx.quadraticCurveTo(lx, ly + wig * (i % 2 ? 1 : -1), lx + sx * 4, ly + 8);
+      cx.stroke();
+    }
+  }
+  // shell — a fat spiral, the reason bananas bounce
+  cx.fillStyle = "#C99A5B";
+  cx.beginPath(); cx.arc(9, -4, 15, 0, TAU); cx.fill();
+  cx.strokeStyle = "#8A6534"; cx.lineWidth = 2.5;
+  cx.beginPath();
+  for (let a = 0; a < 9; a += 0.12) {
+    const r = 2 + a * 1.55;
+    const px = 9 + Math.cos(a * 1.5) * r, py = -4 + Math.sin(a * 1.5) * r;
+    a === 0 ? cx.moveTo(px, py) : cx.lineTo(px, py);
+  }
+  cx.stroke();
+  cx.fillStyle = "#E8C48A";
+  cx.beginPath(); cx.arc(13, -8, 4, 0, TAU); cx.fill();
+  // body poking out
+  cx.fillStyle = "#E2673F";
+  cx.beginPath(); cx.ellipse(-6, 1, 11, 9, 0, 0, TAU); cx.fill();
+  // claw
+  cx.save();
+  cx.translate(-15, 2); cx.rotate(-pinch);
+  cx.fillStyle = "#E2673F";
+  cx.beginPath(); cx.ellipse(-4, 0, 7, 5, 0, 0, TAU); cx.fill();
+  cx.fillStyle = "#C4502C";
+  cx.beginPath(); cx.moveTo(-9, -4); cx.lineTo(-16, -6); cx.lineTo(-9, 0); cx.closePath(); cx.fill();
+  cx.restore();
+  // eyes on stalks
+  cx.strokeStyle = "#E2673F"; cx.lineWidth = 2;
+  for (const ex of [-10, -4]) {
+    cx.beginPath(); cx.moveTo(ex, -6); cx.lineTo(ex - 1, -13); cx.stroke();
+    cx.fillStyle = "#FFFFFF";
+    cx.beginPath(); cx.arc(ex - 1, -15, 3, 0, TAU); cx.fill();
+    cx.fillStyle = "#2B2F38";
+    cx.beginPath(); cx.arc(ex - 1.5, -15, 1.5, 0, TAU); cx.fill();
+  }
+}
 // King Pincher: a crab of unreasonable size wearing a golden kelp crown
 function drawBoss(e, dir) {
   cx.save();
@@ -1562,8 +1857,52 @@ function drawShot(s) {
   else if (s.kind === "clam") drawClamIcon(s.x, s.y, 1, 0.12, s.spin);
   else drawCocoIcon(s.x, s.y, 1.05, s.spin);
 }
+// Dusk tint for NIGHTFALL waves — fades in and out with G.night so the
+// transition never snaps.
+const stars = [];
+for (let i = 0; i < 44; i++) stars.push({ x: rnd(W), y: rnd(20, 330), s: rnd(0.7, 1.9), tw: rnd(TAU) });
+function drawNight() {
+  if (G.night <= 0.01) return;
+  const n = G.night;
+  cx.save();
+  cx.globalAlpha = n * 0.62;
+  const g = cx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, "#0B1E46");
+  g.addColorStop(0.6, "#12335C");
+  g.addColorStop(1, "#0A2740");
+  cx.fillStyle = g;
+  cx.fillRect(0, 0, W, H);
+  cx.globalAlpha = n;
+  cx.fillStyle = "#FFFFFF";
+  for (const st of stars) {
+    const a = 0.35 + 0.45 * Math.sin(G.t * 2 + st.tw);
+    cx.globalAlpha = n * a;
+    cx.beginPath(); cx.arc(st.x, st.y, st.s, 0, TAU); cx.fill();
+  }
+  cx.restore();
+}
+// Wind streaks, so a bent throw looks deliberate rather than broken.
+function drawWind() {
+  if (!G.wind) return;
+  const dir = Math.sign(G.wind);
+  cx.save();
+  cx.strokeStyle = "rgba(255,255,255,0.32)";
+  cx.lineWidth = 2; cx.lineCap = "round";
+  for (let i = 0; i < 9; i++) {
+    const seed = i * 137.5;
+    const y = 60 + ((seed * 3.1) % (GROUND - 90));
+    const span = 40 + (seed % 50);
+    const x = (G.t * (120 + (seed % 80)) * dir + seed * 7) % (W + 260) * 1;
+    const px = dir > 0 ? x - 130 : W + 130 - x;
+    cx.globalAlpha = 0.25 + 0.2 * Math.sin(G.t * 3 + i);
+    cx.beginPath(); cx.moveTo(px, y); cx.lineTo(px + span * dir, y); cx.stroke();
+  }
+  cx.restore();
+}
+
 function drawTrajectory() {
-  if (G.state !== "play" || G.paused) return;
+  if (G.state !== "play" || G.paused || !opts.preview) return;
+  if (touchMode && !touchAim.active) return;   // only while a finger is aiming
   const h = handPos(), aim = clampAim(aimAngle());
   const a = aim.a;
   const coco = G.cocoCd <= 0 && (keys.KeyE || keys.ShiftLeft);
@@ -1574,7 +1913,7 @@ function drawTrajectory() {
     : coco ? "rgba(120,72,32,0.5)" : "rgba(255,210,59,0.55)";
   const step = 0.05;
   for (let i = 0; i < 14; i++) {
-    vy += g * step; x += vx * step; y += vy * step;
+    vy += g * step; vx += G.wind * step; x += vx * step; y += vy * step;
     if (y > GROUND) break;
     cx.beginPath(); cx.arc(x, y, 3.2 - i * 0.12, 0, TAU); cx.fill();
   }
@@ -1675,17 +2014,19 @@ function drawHUD() {
     const shake2 = Math.sin(G.bananaFlash * 60) * 3;
     cx.translate(shake2, 0);
   }
-  for (let i = 0; i < BANANA_MAX; i++) {
+  const cap = bananaMax();
+  const pipGap = cap > 8 ? 11 : 15, pipScale = cap > 8 ? 0.34 : 0.42;
+  for (let i = 0; i < cap; i++) {
     const filled = i < G.bananas;
     const growing = !filled && i === G.bananas;
     cx.save();
-    cx.translate(bx + 10 + i * 15, bny + 4);
-    if (!filled) cx.globalAlpha = growing ? 0.35 + 0.35 * (1 - G.bananaRegrow / BANANA_REGROW) : 0.22;
-    drawBananaIcon(0, 0, 0.42);
+    cx.translate(bx + 10 + i * pipGap, bny + 4);
+    if (!filled) cx.globalAlpha = growing ? 0.35 + 0.35 * (1 - G.bananaRegrow / bananaRate()) : 0.22;
+    drawBananaIcon(0, 0, pipScale);
     cx.restore();
   }
   cx.restore();
-  if (G.bananas <= 0) txt("regrowing…", bx + BANANA_MAX * 15 + 16, bny + 5, 11, "#FFE9A8", "left");
+  if (G.bananas <= 0) txt("regrowing…", bx + cap * pipGap + 16, bny + 5, 11, "#FFE9A8", "left");
   // coconut cooldown
   const cy = bny + 22;
   drawCocoIcon(bx + 12, cy + 6, 0.8);
@@ -1699,6 +2040,20 @@ function drawHUD() {
   if (G.heldClam) {
     drawClamIcon(bx + 12, cy + 30, 0.75, 0.3);
     txt(touchMode ? "tap 🦪 to throw" : "Q — banish a species!", bx + 28, cy + 31, 12, "#FFC9DE", "left");
+  }
+  // earned boons, so the player can see what this run has become
+  const owned = BOONS.filter(b => lv(b.id) > 0);
+  if (owned.length) {
+    let ox = bx + 4, oy = cy + (G.heldClam ? 52 : 26);
+    for (const b of owned) {
+      const label = b.short + " " + ROMAN[lv(b.id)];
+      const w2 = label.length * 6.2 + 12;
+      if (ox + w2 > bx + 250) { ox = bx + 4; oy += 17; }
+      cx.fillStyle = "rgba(0,0,0,0.28)";
+      roundRect(ox, oy, w2, 15, 7); cx.fill();
+      txt(label, ox + w2 / 2, oy + 8, 10, b.tint, "center");
+      ox += w2 + 5;
+    }
   }
 
   // score block
@@ -1735,9 +2090,31 @@ function drawHUD() {
   }
   if (muted) txt("🔇", 24, H - 22, 20, "#FFFFFF", "left", false);
 
+  // A portrait phone letterboxes this 16:9 field down to a thin strip, so
+  // nudge toward landscape for the first few seconds of a run.
+  if (touchMode && G.state === "play" && G.playT < 9 && innerHeight > innerWidth) {
+    const a = clamp(9 - G.playT, 0, 1);
+    cx.save();
+    cx.globalAlpha = a;
+    const msg = "Turn your phone sideways for a bigger view";
+    cx.font = 'bold 15px "Trebuchet MS", Verdana, sans-serif';
+    const pw = cx.measureText(msg).width + 58;
+    cx.fillStyle = "rgba(10,45,60,0.82)";
+    roundRect(W / 2 - pw / 2, 16, pw, 32, 16); cx.fill();
+    txt(msg, W / 2 + 12, 32, 15, "#FFFFFF", "center", false);
+    // little rotating-phone glyph
+    cx.save();
+    cx.translate(W / 2 - pw / 2 + 26, 32);
+    cx.rotate(Math.sin(G.t * 2) * 0.5 - 0.3);
+    cx.strokeStyle = "#FFE9A8"; cx.lineWidth = 2;
+    roundRect(-6, -9, 12, 18, 3); cx.stroke();
+    cx.restore();
+    cx.restore();
+  }
+
   // touch buttons
   if (touchMode && G.state === "play") {
-    for (const k of ["up", "down", "coco", "swing", "clam"]) {
+    for (const k of ["up", "down", "coco", "swing", "clam", "pause"]) {
       if (k === "clam" && !G.heldClam) continue;
       const btn = touchBtns[k];
       cx.globalAlpha = btn.held ? 0.75 : 0.4;
@@ -1746,6 +2123,11 @@ function drawHUD() {
       cx.globalAlpha = 0.9;
       if (k === "coco") drawCocoIcon(btn.x, btn.y, 1.4);
       else if (k === "clam") drawClamIcon(btn.x, btn.y, 1.3, 0.3);
+      else if (k === "pause") {
+        cx.fillStyle = "#1B5E63";
+        roundRect(btn.x - 8, btn.y - 9, 6, 18, 2); cx.fill();
+        roundRect(btn.x + 2, btn.y - 9, 6, 18, 2); cx.fill();
+      }
       else if (k === "swing") {
         cx.save();
         cx.translate(btn.x, btn.y); cx.rotate(-0.7);
@@ -1760,6 +2142,120 @@ function drawHUD() {
     }
   }
 }
+// --------------------------- Draft screen -------------------------
+const CARD = { w: 212, h: 196, gap: 24, y: 196 };
+function draftCardX(i) { return W / 2 - (CARD.w * 1.5 + CARD.gap) + i * (CARD.w + CARD.gap); }
+function draftCardAt(x, y) {
+  if (!G.draft) return -1;
+  for (let i = 0; i < G.draft.picks.length; i++) {
+    const cxx = draftCardX(i);
+    if (x >= cxx && x <= cxx + CARD.w && y >= CARD.y && y <= CARD.y + CARD.h) return i;
+  }
+  return -1;
+}
+function draftHit(x, y) {
+  const i = draftCardAt(x, y);
+  if (i >= 0) takeBoon(i);
+}
+function drawBoonIcon(b, x, y) {
+  cx.save();
+  cx.translate(x, y);
+  switch (b.id) {
+    case "bunch":
+      drawBananaIcon(-9, 4, 0.85, 0.3); drawBananaIcon(9, 4, 0.85, -0.3); drawBananaIcon(0, -6, 0.95, 0);
+      break;
+    case "ripen":
+      drawBananaIcon(0, 0, 1.1, 0);
+      cx.strokeStyle = "#8CFF6B"; cx.lineWidth = 3; cx.lineCap = "round";
+      cx.beginPath(); cx.arc(0, 0, 20, -0.6, 3.6); cx.stroke();
+      cx.beginPath(); cx.moveTo(-18, 12); cx.lineTo(-20, 2); cx.lineTo(-11, 6); cx.stroke();
+      break;
+    case "ripe":
+      drawBananaIcon(0, 0, 1.35, 0);
+      break;
+    case "stick":
+      cx.strokeStyle = "#8A5228"; cx.lineWidth = 9; cx.lineCap = "round";
+      cx.beginPath(); cx.moveTo(-19, 15); cx.lineTo(19, -15); cx.stroke();
+      cx.strokeStyle = "#B5713A"; cx.lineWidth = 4;
+      cx.beginPath(); cx.moveTo(-19, 15); cx.lineTo(19, -15); cx.stroke();
+      break;
+    case "blast":
+      cx.strokeStyle = "rgba(255,180,90,0.85)"; cx.lineWidth = 2.5;
+      cx.beginPath(); cx.arc(0, 0, 21, 0, TAU); cx.stroke();
+      drawCocoIcon(0, 0, 1.2);
+      break;
+    case "limber":
+      cx.strokeStyle = "#7FE3FF"; cx.lineWidth = 3.5; cx.lineCap = "round";
+      cx.beginPath(); cx.arc(0, -6, 16, 0.15, 2.4); cx.stroke();
+      cx.beginPath(); cx.moveTo(-3, 16); cx.lineTo(2, 22); cx.lineTo(9, 13); cx.stroke();
+      break;
+    case "bark":
+      cx.fillStyle = "#8A5A2B"; roundRect(-7, -14, 14, 30, 4); cx.fill();
+      cx.fillStyle = "#6BBF59";
+      cx.beginPath(); cx.ellipse(-13, -14, 13, 7, -0.4, 0, TAU); cx.fill();
+      cx.beginPath(); cx.ellipse(13, -14, 13, 7, 0.4, 0, TAU); cx.fill();
+      cx.beginPath(); cx.ellipse(0, -20, 12, 7, 0, 0, TAU); cx.fill();
+      break;
+    case "pearl":
+      drawClamIcon(0, 4, 1.5, 0.5);
+      break;
+  }
+  cx.restore();
+}
+function drawDraft() {
+  const d = G.draft;
+  if (!d) return;
+  cx.fillStyle = "rgba(6,40,54,0.72)";
+  cx.fillRect(0, 0, W, H);
+  txt("PICK A BOON", W / 2, 118, 44, "#FFFFFF", "center");
+  txt("Wave " + G.wave + " cleared — the monkey has learned something", W / 2, 154, 16, "#D8F7FF", "center");
+
+  for (let i = 0; i < d.picks.length; i++) {
+    const b = d.picks[i], x = draftCardX(i), hot = d.hover === i;
+    const next = lv(b.id) + 1;
+    cx.save();
+    if (hot) { cx.translate(0, -6); }
+    // card body
+    cx.fillStyle = hot ? "rgba(255,255,255,0.97)" : "rgba(255,255,255,0.9)";
+    roundRect(x, CARD.y, CARD.w, CARD.h, 18); cx.fill();
+    cx.strokeStyle = b.tint; cx.lineWidth = hot ? 5 : 3;
+    roundRect(x, CARD.y, CARD.w, CARD.h, 18); cx.stroke();
+    // tinted emblem well
+    cx.fillStyle = b.tint;
+    cx.globalAlpha = 0.18;
+    cx.beginPath(); cx.arc(x + CARD.w / 2, CARD.y + 62, 38, 0, TAU); cx.fill();
+    cx.globalAlpha = 1;
+    drawBoonIcon(b, x + CARD.w / 2, CARD.y + 62);
+    // wording
+    txt(b.name, x + CARD.w / 2, CARD.y + 122, 19, "#123A44", "center", false);
+    wrapText(b.desc, x + CARD.w / 2, CARD.y + 148, CARD.w - 30, 13, "#43626B");
+    // stack progress
+    const owned = lv(b.id);
+    for (let k = 0; k < b.max; k++) {
+      cx.fillStyle = k < owned ? b.tint : k === owned ? "#9FB6BD" : "rgba(0,0,0,0.12)";
+      cx.beginPath(); cx.arc(x + CARD.w / 2 + (k - (b.max - 1) / 2) * 14, CARD.y + CARD.h - 22, 4.5, 0, TAU); cx.fill();
+    }
+    if (owned) txt(ROMAN[owned] + " → " + ROMAN[next], x + CARD.w - 14, CARD.y + 20, 12, b.tint, "right", false);
+    txt(String(i + 1), x + 16, CARD.y + 20, 15, "#9FB6BD", "left", false);
+    cx.restore();
+  }
+  txt(touchMode ? "tap a card" : "click a card, or press 1 · 2 · 3", W / 2, CARD.y + CARD.h + 40, 16, "#FFE9A8", "center");
+}
+// Tiny word-wrapper for card copy.
+function wrapText(str, cxCenter, y, maxW, size, color) {
+  cx.font = `bold ${size}px "Trebuchet MS", Verdana, sans-serif`;
+  const words = str.split(" ");
+  const lines = [];
+  let line = "";
+  for (const w of words) {
+    const test = line ? line + " " + w : w;
+    if (cx.measureText(test).width > maxW && line) { lines.push(line); line = w; }
+    else line = test;
+  }
+  if (line) lines.push(line);
+  lines.forEach((l, i) => txt(l, cxCenter, y + i * (size + 4), size, color, "center", false));
+}
+
 function drawTitle() {
   cx.fillStyle = "rgba(8,40,60,0.18)";
   cx.fillRect(0, 0, W, H);
@@ -1790,8 +2286,9 @@ function drawTitle() {
   const cy = 356;
   cx.fillStyle = "rgba(10,45,60,0.55)";
   roundRect(W / 2 - 40, cy - 26, 430, 204, 16); cx.fill();
-  txt("W / S  or  ▲ ▼  — climb up & down", W / 2 - 20, cy, 16, "#D8F7FF", "left");
-  txt("CLICK — banana · RIGHT-CLICK / E — coconut (BOOM)", W / 2 - 20, cy + 26, 16, "#FFE9A8", "left");
+  txt(touchMode ? "▲ ▼ buttons — climb up & down" : "W / S  or  ▲ ▼  — climb up & down", W / 2 - 20, cy, 16, "#D8F7FF", "left");
+  txt(touchMode ? "DRAG to aim, RELEASE to throw · 🥥 button for coconuts"
+               : "CLICK — banana · RIGHT-CLICK / E — coconut (BOOM)", W / 2 - 20, cy + 26, 16, "#FFE9A8", "left");
   txt("Only " + BANANA_MAX + " bananas at a time — the bunch regrows, so pace your throws", W / 2 - 20, cy + 52, 16, "#FFEBC2", "left");
   txt("You can't throw straight down — climb low to defend low!", W / 2 - 20, cy + 78, 16, "#FFC9A8", "left");
   txt("F — stick bonk (reaches the ground when you're low)", W / 2 - 20, cy + 104, 16, "#FFD8B8", "left");
@@ -1799,11 +2296,56 @@ function drawTitle() {
   txt("Lose your tree? Run & claim a new one!", W / 2 - 20, cy + 156, 16, "#C9FFB8", "left");
   if (G.hi > 0) txt("BEST SCORE  " + G.hi, W / 2, 320, 18, "#FFE9A8", "center");
 }
+// --------------------------- Pause menu ---------------------------
+const pauseMenu = { hover: -1 };
+const PAUSE_ROW = { w: 320, h: 46, gap: 10, top: 214 };
+// Built fresh each frame so the on/off labels always reflect current state.
+function pauseRows() {
+  return [
+    { label: "Resume", value: null, act: () => togglePause() },
+    { label: "Sound", value: !muted, act: () => toggleMute() },
+    { label: "Screen shake", value: opts.shake, act: () => setOpt("shake", !opts.shake) },
+    { label: "Aim preview", value: opts.preview, act: () => setOpt("preview", !opts.preview) },
+  ];
+}
+function pauseRowAt(x, y) {
+  const rows = pauseRows();
+  for (let i = 0; i < rows.length; i++) {
+    const ry = PAUSE_ROW.top + i * (PAUSE_ROW.h + PAUSE_ROW.gap);
+    if (x >= W / 2 - PAUSE_ROW.w / 2 && x <= W / 2 + PAUSE_ROW.w / 2 && y >= ry && y <= ry + PAUSE_ROW.h) return i;
+  }
+  return -1;
+}
+function pauseHit(x, y) {
+  const i = pauseRowAt(x, y);
+  if (i < 0) return;      // clicking off the menu no longer resumes by accident
+  pauseRows()[i].act();
+  sfx.pop();
+}
 function drawPaused() {
-  cx.fillStyle = "rgba(8,30,45,0.55)";
+  cx.fillStyle = "rgba(8,30,45,0.68)";
   cx.fillRect(0, 0, W, H);
-  txt("PAUSED", W / 2, H / 2 - 20, 54, "#FFFFFF", "center");
-  txt("press P or click to resume", W / 2, H / 2 + 30, 20, "#D8F7FF", "center");
+  txt("PAUSED", W / 2, 150, 52, "#FFFFFF", "center");
+
+  const rows = pauseRows();
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i], hot = pauseMenu.hover === i;
+    const x = W / 2 - PAUSE_ROW.w / 2, y = PAUSE_ROW.top + i * (PAUSE_ROW.h + PAUSE_ROW.gap);
+    cx.fillStyle = hot ? "rgba(255,255,255,0.96)" : "rgba(255,255,255,0.86)";
+    roundRect(x, y, PAUSE_ROW.w, PAUSE_ROW.h, 12); cx.fill();
+    if (hot) { cx.strokeStyle = "#FFD23B"; cx.lineWidth = 3; roundRect(x, y, PAUSE_ROW.w, PAUSE_ROW.h, 12); cx.stroke(); }
+    txt(r.label, x + 18, y + PAUSE_ROW.h / 2, 19, "#123A44", "left", false);
+    if (r.value !== null) {
+      // pill switch
+      const px = x + PAUSE_ROW.w - 74, py = y + PAUSE_ROW.h / 2 - 12;
+      cx.fillStyle = r.value ? "#5FCB57" : "#B9C6CB";
+      roundRect(px, py, 56, 24, 12); cx.fill();
+      cx.fillStyle = "#FFFFFF";
+      cx.beginPath(); cx.arc(px + (r.value ? 44 : 12), py + 12, 9, 0, TAU); cx.fill();
+      txt(r.value ? "ON" : "OFF", px + (r.value ? 20 : 34), py + 12, 10, r.value ? "#2C7A2B" : "#5C6D73", "center", false);
+    }
+  }
+  txt(touchMode ? "tap Resume to keep going" : "P or Esc to resume", W / 2, PAUSE_ROW.top + rows.length * (PAUSE_ROW.h + PAUSE_ROW.gap) + 24, 15, "#D8F7FF", "center");
 }
 
 requestAnimationFrame(frame);
