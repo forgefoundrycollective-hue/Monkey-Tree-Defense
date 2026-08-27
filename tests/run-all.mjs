@@ -10,8 +10,10 @@ import ammo from "./ammo.test.mjs";
 import upgrades from "./upgrades.test.mjs";
 import lategame from "./lategame.test.mjs";
 import controls from "./controls.test.mjs";
+import tips from "./tips.test.mjs";
+import audio from "./audio.test.mjs";
 
-const SUITES = { mechanics, progression, ammo, upgrades, lategame, controls };
+const SUITES = { mechanics, progression, ammo, upgrades, lategame, controls, tips, audio };
 
 const filter = process.argv[2];
 const chosen = Object.entries(SUITES).filter(([name]) => !filter || name.includes(filter));

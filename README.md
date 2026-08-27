@@ -63,12 +63,17 @@ automatically on touch devices.
 - Clearing a wave heals the tree a little — and sometimes the tide leaves a
   **clam** at the trunk base. Climb down, grab it before the next wave arrives,
   and throw it (`Q`): whatever species it hits is banished for the wave.
+- The first time each new threat turns up — a shelled hermit, a thieving gull,
+  a dive-bomb, a washed-up clam — the game explains it once, so you learn the
+  rule instead of guessing at it.
 - When the tree is nearly gone, listen for the heartbeat…
 - If the tree's HP hits zero — **TIMBERRR!** — it crashes down (squashing
   anyone underneath), and your monkey runs down the beach to claim a fresh
   tree. There is no game over: the new tree **restarts at a checkpoint — half
   the wave you reached** (fall on wave 7, restart at 3; wave 10, restart
-  at 5) — while your score keeps climbing. Beat your best.
+  at 5) — while your score keeps climbing. Beat your best. As the monkey
+  sprints off, a card shows how that tree went: waves survived, kills, best
+  combo, points, and the upgrades it earned.
 
 ## Tech notes
 
@@ -77,7 +82,9 @@ automatically on touch devices.
   letterboxed to any window size).
 - All audio is synthesized with the Web Audio API — SFX are little
   oscillator/noise recipes, and the background tune is a 4-bar loop rendered
-  into a buffer at load time.
+  into a buffer at load time. A second, phase-locked loop carries a low
+  ostinato that fades in only while King Pincher is on the beach, and night
+  waves close a lowpass over the music and bring out crickets.
 
 ## Tests
 
@@ -101,3 +108,5 @@ Playwright is resolved from a local install, a global one, or
 | `upgrades` | Draft cadence, each upgrade's effect, stack caps, run resets |
 | `lategame` | Wave-8+ unlocks, hermit armor, gull theft and recovery, wave modifiers |
 | `controls` | Mouse vs touch throwing, drag-to-aim, pause menu, options and their persistence |
+| `tips` | First-encounter coaching fires once, expires, and resets per run |
+| `audio` | Music layering: the King's ostinato, the night filter, and tempo staying locked across layers |

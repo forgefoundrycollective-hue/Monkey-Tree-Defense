@@ -162,6 +162,7 @@ function touchButtonHit(x, y, press) {
 
 // ----------------------------- Audio -----------------------------
 let AC = null, master = null, musicGain = null, musicSrc = null, noiseBuf = null;
+let musicFilter = null, bossGain = null, bossSrc = null;
 let muted = store.get("mtd_mute") === "1";
 
 function audioInit() {
@@ -280,18 +281,88 @@ function startMusic() {
   src.buffer = buf; src.loop = true;
   src.playbackRate.value = G.musicRate;
   musicGain = AC.createGain(); musicGain.gain.value = 0.5;
-  src.connect(musicGain); musicGain.connect(master);
+  // Night waves duck the melody behind a lowpass so the beach feels quieter.
+  musicFilter = AC.createBiquadFilter();
+  musicFilter.type = "lowpass";
+  musicFilter.frequency.value = 20000;
+  src.connect(musicGain); musicGain.connect(musicFilter); musicFilter.connect(master);
   src.start();
   musicSrc = src;
+  startBossLayer(sr, step, steps, len);
+}
+// A second loop, the same length so it stays phase-locked with the melody,
+// silent until King Pincher turns up. Layering beats swapping buffers — the
+// tune never restarts, it just grows a threat underneath it.
+function startBossLayer(sr, step, steps, len) {
+  const buf = AC.createBuffer(1, len, sr);
+  const data = buf.getChannelData(0);
+  // low minor ostinato: C, Eb, G, Eb — plus a slow floor-tom pulse
+  const notes = [65.4, 77.8, 98, 77.8];
+  const growl = (t, f, vol, decay) => {
+    const s0 = Math.floor(t * sr), n = Math.min(len - s0, Math.floor(0.9 * sr));
+    for (let i = 0; i < n; i++) {
+      const tt = i / sr, e = Math.exp(-tt * decay);
+      // slightly detuned pair gives it a menacing beat frequency
+      data[s0 + i] += vol * e * (Math.sin(TAU * f * tt) + 0.7 * Math.sin(TAU * f * 1.006 * tt)
+                                 + 0.25 * Math.sin(TAU * f * 0.5 * tt));
+    }
+  };
+  const thud = t => {
+    const s0 = Math.floor(t * sr), n = Math.min(len - s0, Math.floor(0.25 * sr));
+    for (let i = 0; i < n; i++) {
+      const tt = i / sr, e = Math.exp(-tt * 16);
+      data[s0 + i] += 0.32 * e * Math.sin(TAU * (110 - 70 * tt / 0.25) * tt);
+    }
+  };
+  for (let s = 0; s < steps; s++) {
+    const t = s * step;
+    if (s % 4 === 0) growl(t, notes[((s / 4) | 0) % notes.length], 0.13, 3.2);
+    if (s % 8 === 0 || s % 8 === 6) thud(t);
+  }
+  const src = AC.createBufferSource();
+  src.buffer = buf; src.loop = true;
+  src.playbackRate.value = G.musicRate;
+  bossGain = AC.createGain(); bossGain.gain.value = 0;
+  src.connect(bossGain); bossGain.connect(master);
+  src.start();
+  bossSrc = src;
+}
+// Fades the King's layer in and out, and opens or closes the night filter.
+function updateMusicLayers(dt) {
+  if (!AC) return;
+  const t = AC.currentTime;
+  // Schedule a ramp only when the TARGET changes. Re-ramping every frame
+  // restarts the ramp from wherever it got to, so the value creeps toward
+  // the target and never arrives.
+  const wantBoss = G.state === "play" && G.enemies.some(e => e.kind === "boss" && !e.dead) ? 0.85 : 0;
+  if (bossGain && bossGain._target !== wantBoss) {
+    bossGain._target = wantBoss;
+    bossGain.gain.cancelScheduledValues(t);
+    bossGain.gain.setValueAtTime(bossGain.gain.value, t);
+    bossGain.gain.linearRampToValueAtTime(wantBoss, t + 1.2);
+  }
+  // G.night is already eased frame to frame, so the filter can track it
+  // directly rather than chasing it with ramps.
+  if (musicFilter) musicFilter.frequency.value = 20000 - G.night * 18200;
+  // crickets, but only once it is properly dark
+  if (G.night > 0.65 && G.state === "play") {
+    G.cricketT -= dt;
+    if (G.cricketT <= 0) {
+      G.cricketT = rnd(0.5, 1.6);
+      const f = rnd(2300, 3100);
+      for (let i = 0; i < 3; i++) tone(f, f * 0.97, 0.035, "triangle", 0.035, i * 0.055);
+    }
+  }
 }
 // The soundtrack keeps pace with the waves — faster music, higher tension.
 function setMusicRate(r) {
   G.musicRate = r;
-  if (musicSrc) {
-    const t = AC.currentTime;
-    musicSrc.playbackRate.cancelScheduledValues(t);
-    musicSrc.playbackRate.setValueAtTime(musicSrc.playbackRate.value, t);
-    musicSrc.playbackRate.linearRampToValueAtTime(r, t + 1.5);
+  const t = AC ? AC.currentTime : 0;
+  for (const src of [musicSrc, bossSrc]) {
+    if (!src) continue;
+    src.playbackRate.cancelScheduledValues(t);
+    src.playbackRate.setValueAtTime(src.playbackRate.value, t);
+    src.playbackRate.linearRampToValueAtTime(r, t + 1.5);
   }
 }
 
@@ -324,6 +395,10 @@ const G = {
   squadQueue: [], bossWave: false, heartT: 0,
   bananas: BANANA_MAX, bananaRegrow: 0, bananaFlash: 0,
   upgrades: {}, draft: null,
+  tipsSeen: {}, tip: null,
+  cricketT: 0,
+  treeStats: { kills: 0, bestCombo: 0, scoreAt: 0, waveAt: 1, t: 0 },
+  summary: null,
   modifier: null, wind: 0, night: 0,
   frozen: false,   // tests drive the clock themselves; see window.__mtd.freeze
   banner: { text: "", sub: "", t: 0, dur: 0 },
@@ -360,6 +435,16 @@ window.__mtd = {
   openDraft: () => openDraft(),
   takeUpgrade: i => takeUpgrade(i),
   upgradeMax: id => upgradeById[id].max,
+  tip: (id, text) => tip(id, text),
+  audio: () => ({
+    ready: !!AC,
+    state: AC ? AC.state : null,
+    bossLayer: bossGain ? +bossGain.gain.value.toFixed(3) : null,
+    filterHz: musicFilter ? Math.round(musicFilter.frequency.value) : null,
+    rate: musicSrc ? +musicSrc.playbackRate.value.toFixed(3) : null,
+    bossRate: bossSrc ? +bossSrc.playbackRate.value.toFixed(3) : null,
+    muted,
+  }),
   opts, setOpt: (k, v) => setOpt(k, v),
   touch: () => ({ mode: touchMode, aiming: touchAim.active }),
   touchButtonHit: (x, y, press) => { touchMode = true; return touchButtonHit(x, y, press); },
@@ -458,6 +543,8 @@ function startGame() {
   audioInit();
   G.state = "play"; G.playT = 0; G.score = 0; G.treesLost = 0;
   G.upgrades = {}; G.draft = null;
+  G.tipsSeen = {}; G.tip = null;
+  G.treeStats = { kills: 0, bestCombo: 0, scoreAt: 0, waveAt: 1, t: 0 }; G.summary = null;
   G.tree.max = 100; G.bananas = BANANA_MAX; G.bananaRegrow = BANANA_REGROW;
   G.tree.hp = G.tree.max; G.tree.stage = 0;
   G.enemies.length = 0; G.shots.length = 0;
@@ -561,6 +648,8 @@ function spawnEnemy(kind) {
   if (k.thief) { e.thief = true; e.loot = 0; }
   if (k.armored) e.armored = true;
   G.enemies.push(e);
+  if (e.armored) tip("hermit", "Hermit crab! Its shell bounces bananas — use a coconut or the stick.", "#C99A5B");
+  if (e.thief) tip("gull", "Gull! It's after your bananas, not the tree — knock it down to get them back.", "#F2F6F9");
 }
 function spawnBoss() {
   const k = KINDS.boss;
@@ -598,6 +687,8 @@ function killEnemy(e, bonusLabel) {
   G.comboT = 2;
   const pts = k.score * G.combo;
   G.score += pts;
+  G.treeStats.kills++;
+  G.treeStats.bestCombo = Math.max(G.treeStats.bestCombo, G.combo);
   if (G.score > G.hi) { G.hi = G.score; store.set("mtd_hi", G.hi); }
   addFloat(e.x, e.y - 24, "+" + pts + (G.combo > 1 ? "  x" + G.combo : ""), G.combo > 1 ? "#FFD23B" : "#FFFFFF");
   if (bonusLabel) addFloat(e.x, e.y - 44, bonusLabel, "#8CFF6B");
@@ -648,6 +739,7 @@ function updateEnemy(e, dt) {
           const d = Math.hypot(CANOPY.x - e.x, CANOPY.y - e.y) || 1;
           const sp = k.speed() * 2.2;
           e.diving = true;
+          tip("dive", "Dive-bomb! It's aiming straight for your canopy.", "#FF9081");
           e.dvx = (CANOPY.x - e.x) / d * sp;
           e.dvy = (CANOPY.y - e.y) / d * sp;
           sfx.alarm();
@@ -673,7 +765,17 @@ function updateEnemy(e, dt) {
       if (Math.abs(e.x - targetX) < 8) { e.state = "attack"; e.atk = rnd(0.2, 0.6); }
       else e.x += e.vx * dt;
       if (e.kind === "boar") e.y = GROUND - 14 - Math.abs(Math.sin(e.t * 9)) * 8;
-      if (e.kind === "boss") e.y = GROUND - 24 - Math.abs(Math.sin(e.t * 4)) * 4;
+      if (e.kind === "boss") {
+        const bob = Math.abs(Math.sin(e.t * 4));
+        e.y = GROUND - 24 - bob * 4;
+        // a footfall each time that bob bottoms out
+        if (e.lastBob !== undefined && e.lastBob > 0.12 && bob <= 0.12) {
+          tone(70, 44, 0.16, "sine", 0.34);
+          noiseHit(0.1, 400, 90, 0.16);
+          shake(3);
+        }
+        e.lastBob = bob;
+      }
     }
   } else if (e.state === "attack") {
     e.atk -= dt;
@@ -687,6 +789,7 @@ function updateEnemy(e, dt) {
         m.safeT = 2.0;  // stun + escape window — no chain-pinching
         shake(6);
         addFloat(m.x, m.y - 52, "OUCH!", "#FF8A5C");
+        tip("pinch", "Down low they can pinch YOU. It shoves them back — climb while you can.", "#FF8A5C");
         sfx.grunt();
         // the pinch shoves every grounded attacker back; they must walk
         // back in, buying the monkey time to climb clear
@@ -728,6 +831,17 @@ function dropLeaf() {
   G.parts.push({ kind: "leaf", x: CANOPY.x + rnd(-70, 70), y: CANOPY.y + rnd(-30, 40), vx: rnd(-25, 25), vy: rnd(10, 40), g: 30, life: rnd(1.5, 2.6), t: 0, rot: rnd(TAU), color: pick(["#59C93C", "#3DAF35", "#7FE05B"]) });
 }
 function beginFall() {
+  // snapshot how this tree went before the state changes out from under us
+  G.summary = {
+    tree: G.treesLost + 1,
+    wave: G.wave,
+    kills: G.treeStats.kills,
+    bestCombo: G.treeStats.bestCombo,
+    points: G.score - G.treeStats.scoreAt,
+    secs: Math.round(G.treeStats.t),
+    upgrades: UPGRADES.filter(u => lv(u.id) > 0).map(u => u.short + " " + ROMAN[lv(u.id)]),
+    next: Math.max(1, Math.floor(G.wave / 2)),
+  };
   G.state = "falling";
   G.tree.fallT = 0; G.tree.crashed = false;
   sfx.creak(); sfx.sadWah();
@@ -813,6 +927,8 @@ function updateArrive(dt) {
     setWave(checkpoint);
     if (G.bossWave) spawnBoss();  // a checkpoint can land on a King wave
     G.bananas = bananaMax(); G.bananaRegrow = bananaRate();
+    G.treeStats = { kills: 0, bestCombo: 0, scoreAt: G.score, waveAt: checkpoint, t: 0 };
+    G.summary = null;
     banner("HOME SWEET HOME!", "Tree #" + (G.treesLost + 1) + " — back to Wave " + checkpoint, 2.6);
     sfx.jingleHome();
   }
@@ -845,6 +961,7 @@ function throwBanana() {
   if (G.state !== "play" || G.paused || G.bananaCd > 0 || G.monkey.stunT > 0) return;
   if (G.bananas <= 0) {
     if (G.bananaFlash <= 0) { sfx.empty(); G.bananaFlash = 0.5; }
+    tip("empty", "Out of bananas — the bunch regrows on its own. Coconut and stick still work.", "#FFD23B");
     return;
   }
   G.bananas--;
@@ -924,6 +1041,7 @@ function updateShots(dt) {
           // the shell shrugs it off — bring a coconut or the stick
           burst(s.x, s.y, "#D8D0C0", 6);
           addFloat(e.x, e.y - 22, "CLANK!", "#D8D0C0");
+          tip("clank", "Bananas can't crack that shell. Coconut (E) or stick (F).", "#C99A5B");
           sfx.crabClick();
           s.dead = true;
         } else if (s.kind === "banana") {
@@ -988,6 +1106,15 @@ function burst(x, y, color, n) {
 function addFloat(x, y, text, color) {
   G.floats.push({ x, y, text, color, t: 0, life: 1.1 });
 }
+// One-time coaching. Each rule the game added later (shells, thieves, the
+// pinch) is otherwise only learnable by guessing, so the first time one
+// bites, say so once. Fires at most once per run and never stacks.
+function tip(id, text, tint = "#FFE9A8") {
+  if (G.tipsSeen[id]) return;
+  G.tipsSeen[id] = true;
+  G.tip = { text, tint, t: 0, dur: 4.6 };
+  sfx.chatter();
+}
 function updateFX(dt) {
   for (const p of G.parts) {
     p.t += dt;
@@ -1031,6 +1158,9 @@ function update(dt) {
     G.bananaRegrow -= dt;
     if (G.bananaRegrow <= 0) { G.bananas++; G.bananaRegrow = bananaRate(); }
   } else G.bananaRegrow = bananaRate();
+  if (G.tip) { G.tip.t += dt; if (G.tip.t > G.tip.dur) G.tip = null; }
+  updateMusicLayers(dt);
+  if (G.state === "play") G.treeStats.t += dt;
   const wantNight = G.state === "play" && G.modifier && G.modifier.id === "night" ? 1 : 0;
   G.night += clamp(wantNight - G.night, -dt * 0.8, dt * 0.8);
   G.comboT = Math.max(0, G.comboT - dt);
@@ -1091,7 +1221,10 @@ function update(dt) {
         G.bananas = bananaMax(); G.bananaRegrow = bananaRate();
         sfx.heal();
         // sometimes the tide leaves a gift at the trunk base…
-        if (!G.heldClam && Math.random() < clamChance()) G.clam = { t: 0 };
+        if (!G.heldClam && Math.random() < clamChance()) {
+          G.clam = { t: 0 };
+          tip("clam", "A clam washed up! Climb to the bottom to grab it before the next wave.", "#FF9CCB");
+        }
       }
       G.waveLull -= dt;
       if (G.waveLull <= 0) {
@@ -1170,6 +1303,7 @@ function render() {
 
   if (G.state === "title") drawTitle();
   if (G.state === "draft") drawDraft();
+  drawSummary();
   if (G.paused) drawPaused();
 
   cx.restore();
@@ -2131,6 +2265,24 @@ function drawHUD() {
     cx.restore();
   }
 
+  // one-time coaching toast, low enough to stay clear of the wave banner
+  if (G.tip) {
+    const t = G.tip, inT = clamp(t.t / 0.28, 0, 1), outT = clamp((t.dur - t.t) / 0.5, 0, 1);
+    cx.save();
+    cx.globalAlpha = Math.min(inT, outT);
+    cx.font = 'bold 15px "Trebuchet MS", Verdana, sans-serif';
+    const tw = cx.measureText(t.text).width;
+    const pw = tw + 46, px = W / 2 - pw / 2, py = H - 112 + (1 - inT) * 12;
+    cx.fillStyle = "rgba(9,38,52,0.92)";
+    roundRect(px, py, pw, 38, 19); cx.fill();
+    cx.fillStyle = t.tint;
+    roundRect(px, py, 6, 38, 3); cx.fill();
+    cx.beginPath(); cx.arc(px + 26, py + 19, 8, 0, TAU); cx.fill();
+    txt("!", px + 26, py + 19, 13, "#092634", "center", false);
+    txt(t.text, px + 40, py + 19, 15, "#FFFFFF", "left", false);
+    cx.restore();
+  }
+
   // touch buttons
   if (touchMode && G.state === "play") {
     for (const k of ["up", "down", "coco", "swing", "clam", "pause"]) {
@@ -2315,6 +2467,47 @@ function drawTitle() {
   txt("Lose your tree? Run & claim a new one!", W / 2 - 20, cy + 156, 16, "#C9FFB8", "left");
   if (G.hi > 0) txt("BEST SCORE  " + G.hi, W / 2, 320, 18, "#FFE9A8", "center");
 }
+// -------------------------- Run summary ---------------------------
+// The game never ends, so losing a tree is the only natural punctuation.
+// This rides along with the fall-and-sprint sequence rather than blocking
+// it, so the player reads their run while the monkey is still running.
+function drawSummary() {
+  const s = G.summary;
+  if (!s) return;
+  if (G.state !== "falling" && G.state !== "running" && G.state !== "arrive") return;
+  const t = G.tree.fallT || 0;
+  const inT = clamp((t - 1.1) / 0.45, 0, 1);
+  if (inT <= 0) return;
+  const w = 330, h = 208 + (s.upgrades.length ? 26 : 0);
+  const x = W / 2 - w / 2, y = 92 - (1 - inT) * 26;
+  cx.save();
+  cx.globalAlpha = inT;
+  cx.fillStyle = "rgba(9,38,52,0.9)";
+  roundRect(x, y, w, h, 18); cx.fill();
+  cx.strokeStyle = "rgba(255,233,168,0.5)"; cx.lineWidth = 2;
+  roundRect(x, y, w, h, 18); cx.stroke();
+
+  txt("TREE #" + s.tree, W / 2, y + 30, 24, "#FFE9A8", "center");
+  txt("stood until wave " + s.wave, W / 2, y + 56, 15, "#D8F7FF", "center");
+
+  const rows = [
+    ["Kills", String(s.kills)],
+    ["Best combo", s.bestCombo > 1 ? "x" + s.bestCombo : "—"],
+    ["Points", String(s.points)],
+    ["Held out", s.secs + "s"],
+  ];
+  rows.forEach(([k, v], i) => {
+    const ry = y + 84 + i * 24;
+    txt(k, x + 24, ry, 15, "#9FC4CE", "left", false);
+    txt(v, x + w - 24, ry, 16, "#FFFFFF", "right", false);
+  });
+  if (s.upgrades.length) {
+    txt(s.upgrades.join(" · "), W / 2, y + 84 + rows.length * 24 + 12, 12, "#FFD8B8", "center", false);
+  }
+  txt("resuming at wave " + s.next, W / 2, y + h - 20, 14, "#8CFF6B", "center", false);
+  cx.restore();
+}
+
 // --------------------------- Pause menu ---------------------------
 const pauseMenu = { hover: -1 };
 const PAUSE_ROW = { w: 320, h: 46, gap: 10, top: 214 };
