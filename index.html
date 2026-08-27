@@ -452,6 +452,9 @@ window.__mtd = {
   pauseRows: () => pauseRows().map(r => ({ label: r.label, value: r.value })),
   pauseHit: (x, y) => pauseHit(x, y),
   pauseRowAt: (x, y) => pauseRowAt(x, y),
+  pausePage: () => pauseMenu.page,
+  togglePause: () => togglePause(),
+  controlRows: () => controlRows(),
 };
 
 // --------------------------- Upgrades -------------------------------
@@ -595,6 +598,8 @@ function startWave(n) {
   }
 }
 function togglePause() {
+  if (G.paused && pauseMenu.page === "controls") { pauseMenu.page = "menu"; return; }
+  pauseMenu.page = "menu";
   G.paused = !G.paused;
 }
 
@@ -987,6 +992,7 @@ function throwBanana() {
 function throwCoconut() {
   if (G.state !== "play" || G.paused || G.cocoCd > 0 || G.monkey.stunT > 0) return;
   G.cocoCd = 1.25;
+  tip("coco", "Coconuts are heavy — shorter arc than a banana, but they explode.", "#8A5228");
   const h = handPos(), a = clampAim(aimAngle()).a, sp = 500;
   G.shots.push({ kind: "coco", x: h.x, y: h.y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, g: 1500, r: 14, spin: rnd(TAU), t: 0, bounced: false });
   G.monkey.throwT = 0.22;
@@ -996,6 +1002,7 @@ function throwCoconut() {
 function throwClam() {
   if (G.state !== "play" || G.paused || !G.heldClam || G.monkey.stunT > 0) return;
   G.heldClam = false;
+  tip("clamthrow", "Clams are heavy too — aim higher than you would with a banana.", "#FF9CCB");
   const h = handPos(), a = clampAim(aimAngle()).a, sp = 520;
   G.shots.push({ kind: "clam", x: h.x, y: h.y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, g: 1200, r: 14, spin: rnd(TAU), t: 0 });
   G.monkey.throwT = 0.22;
@@ -2465,18 +2472,25 @@ function drawTitle() {
   txt(touchMode ? "TAP TO START!" : "CLICK TO START!", 0, 0, 36, "#FFFFFF", "center");
   cx.restore();
 
-  const cy = 356;
+  // Seven lines, sized to sit inside the canvas — the full reference lives
+  // in the pause menu, so this only has to cover what surprises people.
+  const lines = [
+    [touchMode ? "▲ ▼ buttons — climb up & down" : "W / S  or  ▲ ▼  — climb up & down", "#D8F7FF"],
+    [touchMode ? "DRAG to aim, RELEASE to throw · 🥥 button for coconuts"
+               : "CLICK — banana · RIGHT-CLICK / E — coconut (BOOM)", "#FFE9A8"],
+    ["Coconuts & clams are heavier — they arc shorter than bananas", "#FFD8B8"],
+    ["Only " + BANANA_MAX + " bananas at a time — the bunch regrows, so pace them", "#FFEBC2"],
+    ["You can't throw straight down — climb low to defend low!", "#FFC9A8"],
+    [touchMode ? "Stick button — bonk anything on the ground when you're low"
+               : "F — stick bonk (only reaches the ground when you're low)", "#FFCFA8"],
+    [touchMode ? "Forgot a control? ⏸ → Controls, any time."
+                : "Forgot a control? Press P → Controls, any time.", "#C9FFB8"],
+  ];
+  const cy = 338, lh = 25;
   cx.fillStyle = "rgba(10,45,60,0.55)";
-  roundRect(W / 2 - 40, cy - 26, 430, 204, 16); cx.fill();
-  txt(touchMode ? "▲ ▼ buttons — climb up & down" : "W / S  or  ▲ ▼  — climb up & down", W / 2 - 20, cy, 16, "#D8F7FF", "left");
-  txt(touchMode ? "DRAG to aim, RELEASE to throw · 🥥 button for coconuts"
-               : "CLICK — banana · RIGHT-CLICK / E — coconut (BOOM)", W / 2 - 20, cy + 26, 16, "#FFE9A8", "left");
-  txt("Only " + BANANA_MAX + " bananas at a time — the bunch regrows, so pace your throws", W / 2 - 20, cy + 52, 16, "#FFEBC2", "left");
-  txt("You can't throw straight down — climb low to defend low!", W / 2 - 20, cy + 78, 16, "#FFC9A8", "left");
-  txt("F — stick bonk (reaches the ground when you're low)", W / 2 - 20, cy + 104, 16, "#FFD8B8", "left");
-  txt("Q — throw a found clam to BANISH a species", W / 2 - 20, cy + 130, 16, "#FFC9DE", "left");
-  txt("Lose your tree? Run & claim a new one!", W / 2 - 20, cy + 156, 16, "#C9FFB8", "left");
-  if (G.hi > 0) txt("BEST SCORE  " + G.hi, W / 2, 320, 18, "#FFE9A8", "center");
+  roundRect(W / 2 - 40, cy - 24, 470, lines.length * lh + 28, 16); cx.fill();
+  lines.forEach(([text, col], i) => txt(text, W / 2 - 20, cy + i * lh, 16, col, "left"));
+  if (G.hi > 0) txt("BEST SCORE  " + G.hi, W / 2 - 150, 300, 18, "#FFE9A8", "center");
 }
 // -------------------------- Run summary ---------------------------
 // The game never ends, so losing a tree is the only natural punctuation.
@@ -2520,18 +2534,48 @@ function drawSummary() {
 }
 
 // --------------------------- Pause menu ---------------------------
-const pauseMenu = { hover: -1 };
-const PAUSE_ROW = { w: 320, h: 46, gap: 10, top: 214 };
+const pauseMenu = { hover: -1, page: "menu" };
+const PAUSE_ROW = { w: 320, h: 42, gap: 9, top: 182 };
 // Built fresh each frame so the on/off labels always reflect current state.
 function pauseRows() {
   return [
     { label: "Resume", value: null, act: () => togglePause() },
+    { label: "Controls", value: null, act: () => { pauseMenu.page = "controls"; pauseMenu.hover = -1; } },
     { label: "Sound", value: !muted, act: () => toggleMute() },
     { label: "Screen shake", value: opts.shake, act: () => setOpt("shake", !opts.shake) },
     { label: "Aim preview", value: opts.preview, act: () => setOpt("preview", !opts.preview) },
   ];
 }
+// The controls reference, reachable mid-run. Players who skipped the title
+// card (or just forgot which key swings the stick) can look it up here
+// instead of losing a run to it.
+function controlRows() {
+  return touchMode ? [
+    ["▲ ▼", "climb up and down the trunk"],
+    ["drag", "aim — the arc preview follows your finger"],
+    ["release", "throw a banana"],
+    ["🥥", "coconut — heavy, so it flies a shorter arc, but it explodes"],
+    ["stick", "bonk — only reaches the ground when you're climbed down low"],
+    ["🦪", "throw a found clam — heavy arc, banishes that species"],
+    ["⏸", "pause"],
+  ] : [
+    ["W / S", "climb up and down the trunk (also ↑ ↓)"],
+    ["mouse", "aim — the dotted arc shows where the throw lands"],
+    ["click", "throw a banana (also Space) — limited stash, regrows"],
+    ["E / RMB", "coconut — heavy, so it flies a shorter arc, but it explodes"],
+    ["F", "stick bonk — only reaches the ground when you're climbed down low"],
+    ["Q", "throw a found clam — heavy arc, banishes that species"],
+    ["1 2 3", "pick an upgrade when the cards come up"],
+    ["M / P", "mute · pause (Esc also pauses)"],
+  ];
+}
+const BACK_BTN = { w: 150, h: 40 };
+function backBtnRect() { return { x: W / 2 - BACK_BTN.w / 2, y: H - 72, w: BACK_BTN.w, h: BACK_BTN.h }; }
 function pauseRowAt(x, y) {
+  if (pauseMenu.page === "controls") {
+    const b = backBtnRect();
+    return (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) ? 0 : -1;
+  }
   const rows = pauseRows();
   for (let i = 0; i < rows.length; i++) {
     const ry = PAUSE_ROW.top + i * (PAUSE_ROW.h + PAUSE_ROW.gap);
@@ -2542,13 +2586,41 @@ function pauseRowAt(x, y) {
 function pauseHit(x, y) {
   const i = pauseRowAt(x, y);
   if (i < 0) return;      // clicking off the menu no longer resumes by accident
+  if (pauseMenu.page === "controls") { pauseMenu.page = "menu"; sfx.pop(); return; }
   pauseRows()[i].act();
   sfx.pop();
 }
+function drawControlsPage() {
+  txt("CONTROLS", W / 2, 74, 40, "#FFFFFF", "center");
+  const rows = controlRows();
+  const panelW = 640, x = W / 2 - panelW / 2, top = 108;
+  const rh = 34;
+  cx.fillStyle = "rgba(255,255,255,0.07)";
+  roundRect(x, top - 12, panelW, rows.length * rh + 24, 14); cx.fill();
+  rows.forEach(([key, what], i) => {
+    const y = top + i * rh + rh / 2;
+    // key chip
+    cx.font = 'bold 14px "Trebuchet MS", Verdana, sans-serif';
+    const kw = Math.max(58, cx.measureText(key).width + 22);
+    cx.fillStyle = "rgba(255,233,168,0.92)";
+    roundRect(x + 16, y - 13, kw, 26, 8); cx.fill();
+    txt(key, x + 16 + kw / 2, y, 14, "#123A44", "center", false);
+    txt(what, x + 16 + kw + 14, y, 15, "#E8F6FA", "left", false);
+  });
+  txt("Coconuts and clams are heavier than bananas — they arc shorter, so aim higher.",
+      W / 2, top + rows.length * rh + 26, 14, "#FFD8B8", "center", false);
+
+  const b = backBtnRect(), hot = pauseMenu.hover === 0;
+  cx.fillStyle = hot ? "rgba(255,255,255,0.96)" : "rgba(255,255,255,0.86)";
+  roundRect(b.x, b.y, b.w, b.h, 12); cx.fill();
+  if (hot) { cx.strokeStyle = "#FFD23B"; cx.lineWidth = 3; roundRect(b.x, b.y, b.w, b.h, 12); cx.stroke(); }
+  txt("Back", b.x + b.w / 2, b.y + b.h / 2, 18, "#123A44", "center", false);
+}
 function drawPaused() {
-  cx.fillStyle = "rgba(8,30,45,0.68)";
+  cx.fillStyle = "rgba(8,30,45,0.82)";
   cx.fillRect(0, 0, W, H);
-  txt("PAUSED", W / 2, 150, 52, "#FFFFFF", "center");
+  if (pauseMenu.page === "controls") { drawControlsPage(); return; }
+  txt("PAUSED", W / 2, 132, 46, "#FFFFFF", "center");
 
   const rows = pauseRows();
   for (let i = 0; i < rows.length; i++) {

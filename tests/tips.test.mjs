@@ -73,6 +73,24 @@ export default async function run() {
     rec.check("a new run starts coaching from scratch",
       reset.seen === 0 && reset.tip === null, JSON.stringify(reset));
 
+    // --- Heavier ammo explains its own arc the first time it's thrown ---
+    await quiesce(page);
+    const weight = await page.evaluate(() => {
+      const M = window.__mtd, G = M.G;
+      G.tipsSeen = {}; G.tip = null; G.monkey.stunT = 0;
+      G.cocoCd = 0;
+      M.throwCoconut();
+      const coco = G.tip && G.tip.text;
+      G.tip = null; G.heldClam = true;
+      M.throwClam();
+      const clam = G.tip && G.tip.text;
+      return { coco, clam };
+    });
+    rec.check("the first coconut explains its shorter arc",
+      !!weight.coco && /shorter arc/i.test(weight.coco), JSON.stringify(weight.coco));
+    rec.check("the first clam throw explains its arc too",
+      !!weight.clam && /heavy|higher/i.test(weight.clam), JSON.stringify(weight.clam));
+
     // --- Tips never queue up on top of each other ---
     await quiesce(page);
     const single = await page.evaluate(() => {

@@ -85,8 +85,49 @@ export default async function run() {
       await quiesce(page);
 
       const rows = await page.evaluate(() => window.__mtd.pauseRows().map(r => r.label));
-      rec.check("the pause menu offers resume, sound, shake and preview",
-        rows.join("|") === "Resume|Sound|Screen shake|Aim preview", JSON.stringify(rows));
+      rec.check("the pause menu offers resume, controls, and the options",
+        rows.join("|") === "Resume|Controls|Sound|Screen shake|Aim preview", JSON.stringify(rows));
+
+      // --- the controls reference is reachable mid-run ---
+      const ctrl = await page.evaluate(() => {
+        const M = window.__mtd, G = M.G;
+        G.paused = true;
+        const rows = M.pauseRows().map(r => r.label);
+        const i = rows.indexOf("Controls");
+        M.pauseHit(480, 182 + i * (42 + 9) + 20);
+        const page1 = M.pausePage();
+        const listed = M.controlRows();
+        // Back returns to the menu
+        M.pauseHit(480, 540 - 72 + 20);
+        const page2 = M.pausePage();
+        G.paused = false;
+        return { page1, page2, keys: listed.map(r => r[0]), blurb: listed.map(r => r[1]).join(" ") };
+      });
+      rec.check("the Controls row opens a controls page",
+        ctrl.page1 === "controls" && ctrl.page2 === "menu", JSON.stringify({ p1: ctrl.page1, p2: ctrl.page2 }));
+      rec.check("the controls page lists the stick key",
+        ctrl.keys.includes("F") && /stick bonk/.test(ctrl.blurb), JSON.stringify(ctrl.keys));
+      rec.check("the controls page explains the heavier arcs",
+        /shorter arc/.test(ctrl.blurb) && /heavy arc/.test(ctrl.blurb), JSON.stringify(ctrl.blurb.slice(0, 80)));
+
+      // pausing fresh always lands on the menu, and Esc backs out of controls
+      const backOut = await page.evaluate(() => {
+        const M = window.__mtd, G = M.G;
+        G.paused = false;
+        M.togglePause();                       // pause -> menu
+        const a = M.pausePage();
+        M.pauseHit(480, 182 + 1 * (42 + 9) + 20);   // open controls
+        const b = M.pausePage();
+        M.togglePause();                       // Esc/P backs out, stays paused
+        const c = { page: M.pausePage(), paused: G.paused };
+        M.togglePause();                       // now it resumes
+        const d = { page: M.pausePage(), paused: G.paused };
+        return { a, b, c, d };
+      });
+      rec.check("Esc backs out of the controls page before it unpauses",
+        backOut.a === "menu" && backOut.b === "controls" &&
+        backOut.c.page === "menu" && backOut.c.paused === true &&
+        backOut.d.paused === false, JSON.stringify(backOut));
 
       // shake toggle actually suppresses camera shake
       const K = await page.evaluate(() => window.__mtd.consts());
@@ -120,8 +161,8 @@ export default async function run() {
       const toggled = await page.evaluate(() => {
         window.__mtd.setOpt("preview", true);
         window.__mtd.G.paused = true;
-        const y = 214 + 3 * (46 + 10) + 20;      // the "Aim preview" row
-        window.__mtd.pauseHit(480, y);
+        const i = window.__mtd.pauseRows().findIndex(r => r.label === "Aim preview");
+        window.__mtd.pauseHit(480, 182 + i * (42 + 9) + 20);
         const after = window.__mtd.opts.preview;
         window.__mtd.G.paused = false;
         return { after };

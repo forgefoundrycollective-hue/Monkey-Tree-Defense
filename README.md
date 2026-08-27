@@ -22,6 +22,14 @@ to `main` auto-deploys to that link via GitHub Pages.
 | Throw a found clam — **banishes** that species for the wave | `Q` |
 | Mute / Pause | `M` / `P` (or the ⏸ button on touch) |
 
+Pausing opens a menu with a **Controls** page, so you can look up a key mid-run
+instead of losing a tree to a forgotten one. `P` / `Esc` backs out of that page
+before it resumes.
+
+Bananas are light and fly flat. **Coconuts and clams are heavier, so they arc
+shorter** — aim higher with them than you would with a banana. The dotted
+preview always shows the arc for whatever you're about to throw.
+
 On a phone, **drag to aim and release to throw** — the arc preview follows your
 finger, so you can line a shot up before committing. The pause menu carries
 options for sound, screen shake, and the aim preview; screen shake starts off
